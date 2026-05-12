@@ -4,16 +4,20 @@ from sentence_transformers import SentenceTransformer
 
 from core.config import settings
 
+DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+_MODEL_CACHE: dict[str, SentenceTransformer] = {}
+
 
 class EmbeddingService:
     def __init__(self, model_name: str | None = None) -> None:
-        self.model_name = model_name or settings.embedding_model
-        self._model: SentenceTransformer | None = None
+        self.model_name = (model_name or settings.embedding_model or DEFAULT_EMBEDDING_MODEL).strip()
 
     def _get_model(self) -> SentenceTransformer:
-        if self._model is None:
-            self._model = SentenceTransformer(self.model_name, device="cpu")
-        return self._model
+        model = _MODEL_CACHE.get(self.model_name)
+        if model is None:
+            model = SentenceTransformer(self.model_name, device="cpu")
+            _MODEL_CACHE[self.model_name] = model
+        return model
 
     def dimension(self) -> int:
         model = self._get_model()

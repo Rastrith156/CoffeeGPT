@@ -62,12 +62,38 @@ async def main(strict: bool = False) -> None:
     rag_pipeline = RAGPipeline(retriever=retriever)
     ingestion = IngestionPipeline(rag_pipeline=rag_pipeline)
     chatbot = CoffeeChatbotAgent(retriever=retriever)
-    question = "What happened in coffee market today?"
+    retrieval_question = "Why may coffee prices rise?"
+    chat_question = "What happened in coffee market today?"
     errors: list[str] = []
     warnings: list[str] = []
 
     try:
         print_section("1. News Ingestion")
+        bootstrap_count = await asyncio.to_thread(
+            rag_pipeline.index_records,
+            [
+                {
+                    "title": "Brazil coffee production may decline due to heavy rainfall",
+                    "content": (
+                        "Brazil coffee production may decline due to heavy rainfall in key growing regions. "
+                        "Flooded fields and delayed harvest activity could tighten near-term supply and put "
+                        "upward pressure on coffee prices."
+                    ),
+                    "record_type": "bootstrap_news_article",
+                    "raw": {
+                        "summary": "Bootstrap coffee market article used to validate the first end-to-end RAG flow.",
+                    },
+                    "metadata": {
+                        "source": "bootstrap_news",
+                        "title": "Brazil coffee production may decline due to heavy rainfall",
+                        "published_at": "2026-05-12",
+                        "url": "https://example.com/bootstrap/brazil-rainfall",
+                        "channel": "Bootstrap Seed",
+                    },
+                }
+            ],
+        )
+        print(f"Bootstrap indexed: {bootstrap_count}")
         jobs = await ingestion.run(source="news")
         for job in jobs:
             print(f"Source:   {job.source}")
@@ -86,19 +112,22 @@ async def main(strict: bool = False) -> None:
 
         print_section("2. Retriever Search")
         docs = []
-        print(f"Question: {question}")
+        print(f"Question: {retrieval_question}")
         if qdrant_available:
-            docs = await asyncio.to_thread(retriever.search, question, 3)
+            docs = await asyncio.to_thread(retriever.search, retrieval_question, 3)
             print(f"Chunks returned: {len(docs)}")
             for index, doc in enumerate(docs, start=1):
                 print(f"  {index}. {doc.metadata.get('title', 'Untitled')} [{doc.metadata.get('source', 'unknown')}]")
             if not docs:
                 errors.append("Retriever returned no chunks even though Qdrant is online.")
+            elif docs[0].metadata.get("source") != "bootstrap_news":
+                errors.append("Bootstrap rainfall article was not the top retriever match for the validation question.")
         else:
             print("Skipped: Qdrant is offline.")
 
         print_section("3. Chatbot RAG Answer")
-        response = await chatbot.answer(question=question, session_id="test_e2e_flow")
+        print(f"Question: {chat_question}")
+        response = await chatbot.answer(question=chat_question, session_id="test_e2e_flow")
         print(f"Retrieval mode: {response.retrieval_mode}")
         print(f"Model:          {response.model}")
         print(f"Sources cited:  {len(response.sources)}")

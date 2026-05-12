@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 from core.config import settings
 from core.logger import logger
@@ -12,8 +14,19 @@ SYSTEM_PROMPT = """You are CoffeeGPT, an enterprise AI analyst for the global co
 Prioritize the supplied retrieval context over unsupported assumptions.
 If the evidence is limited, say so clearly.
 Keep answers concise, executive-friendly, and grounded in the evidence.
+Do not restate the instructions or turn the answer into a checklist.
 When you use the retrieved context, cite the bracketed source numbers like [1] or [2].
 """
+
+RECENCY_KEYWORDS = (
+    "today",
+    "latest",
+    "recent",
+    "currently",
+    "now",
+    "this week",
+    "yesterday",
+)
 
 
 class CoffeeChatbotAgent:
@@ -66,14 +79,60 @@ class CoffeeChatbotAgent:
         async with self._session_lock:
             self._session_response_ids[session_id] = response_id
 
+    def _prepare_documents(self, question: str, documents: list) -> list:
+        prepared = list(documents)
+        if self._is_recency_question(question):
+            prepared.sort(
+                key=lambda document: (
+                    self._published_timestamp(document.metadata.get("published_at")),
+                    float(document.metadata.get("score") or 0.0),
+                ),
+                reverse=True,
+            )
+        return prepared[: settings.rag_top_k]
+
+    def _is_recency_question(self, question: str) -> bool:
+        lowered = question.lower()
+        return any(keyword in lowered for keyword in RECENCY_KEYWORDS)
+
+    def _published_timestamp(self, value) -> float:
+        if not value:
+            return 0.0
+
+        text = str(value).strip()
+        if not text:
+            return 0.0
+
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+
+        try:
+            return parsedate_to_datetime(text).timestamp()
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return 0.0
+
     def _build_user_input(self, question: str, context: str) -> str:
         ctx = context or "No indexed context was available for this question."
-        return f"Context:\n{ctx}\n\nQuestion:\n{question}"
+        current_date = datetime.now(timezone.utc).date().isoformat()
+        return (
+            "Answer the question directly using the supplied context.\n"
+            "Rules:\n"
+            "- Keep the answer to 3-5 sentences.\n"
+            "- Cite factual claims with bracketed source numbers like [1].\n"
+            "- If the question is about today, latest, or recent events, prioritize the newest published_at values and mention exact dates.\n"
+            "- If the context is insufficient, say so clearly.\n"
+            f"- Current date: {current_date}\n\n"
+            f"Context:\n{ctx}\n\n"
+            f"Question:\n{question}"
+        )
 
     async def answer(self, question: str, session_id: str, use_rag: bool = True) -> ChatResponse:
         documents = []
         if use_rag:
             documents = await asyncio.to_thread(self.retriever.search, question, settings.rag_top_k)
+            documents = self._prepare_documents(question, documents)
 
         context, citations = self._build_context(documents)
         previous_response_id = await self._get_previous_response_id(session_id)

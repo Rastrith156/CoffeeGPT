@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from hashlib import sha1
+from uuid import NAMESPACE_URL, uuid5
 
 from langchain_core.documents import Document
 from qdrant_client import QdrantClient
@@ -121,4 +121,4 @@ class CoffeeRetriever:
         title = str(document.metadata.get("title", ""))
         record_type = str(document.metadata.get("record_type", ""))
         seed = "\n".join([source, title, record_type, document.page_content])
-        return sha1(seed.encode("utf-8")).hexdigest()
+        return str(uuid5(NAMESPACE_URL, seed))

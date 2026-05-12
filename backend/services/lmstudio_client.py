@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,10 +34,14 @@ class LMStudioClient:
         self.base_url = self._normalize_base_url(base_url or settings.lmstudio_base_url)
         self.api_token = api_token if api_token is not None else settings.lmstudio_api_token
         self.timeout_seconds = timeout_seconds or settings.llm_timeout_seconds
+        self.chat_retries = 3
+        self.retry_delay_seconds = 0.5
+        self._chat_lock = asyncio.Lock()
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=self.timeout_seconds,
             headers=self._headers(),
+            limits=httpx.Limits(max_keepalive_connections=0, max_connections=10),
         )
 
     def _normalize_base_url(self, base_url: str) -> str:
@@ -48,7 +53,10 @@ class LMStudioClient:
         return normalized
 
     def _headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "Connection": "close",
+        }
         if self.api_token:
             headers["Authorization"] = f"Bearer {self.api_token}"
         return headers
@@ -127,9 +135,8 @@ class LMStudioClient:
             "stream": False,
         }
 
-        response = await self._client.post("/v1/chat/completions", json=payload)
-        response.raise_for_status()
-        data = response.json()
+        async with self._chat_lock:
+            data = await self._post_chat_completion(payload)
 
         text = ""
         choices = data.get("choices", [])
@@ -149,6 +156,36 @@ class LMStudioClient:
             model_instance_id=data.get("model") or data.get("model_instance_id"),
             stats=data.get("usage") or data.get("stats"),
         )
+
+    async def _post_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
+        last_error: Exception | None = None
+        for attempt in range(1, self.chat_retries + 1):
+            try:
+                response = await self._client.post("/v1/chat/completions", json=payload)
+                response.raise_for_status()
+                data = response.json()
+                if isinstance(data, dict):
+                    return data
+                raise ValueError("LM Studio returned a non-dict chat payload")
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, ValueError) as exc:
+                last_error = exc
+                if not self._should_retry_chat_error(exc) or attempt >= self.chat_retries:
+                    raise
+                await asyncio.sleep(self.retry_delay_seconds * attempt)
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("LM Studio chat call failed without an exception")
+
+    def _should_retry_chat_error(self, exc: Exception) -> bool:
+        if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+            return True
+        if isinstance(exc, ValueError):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError):
+            status_code = exc.response.status_code if exc.response is not None else 0
+            return status_code == 429 or status_code >= 500
+        return False
 
     def _candidate_names(self, model_payload: dict) -> list[str]:
         candidates = [
