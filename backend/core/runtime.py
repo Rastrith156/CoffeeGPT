@@ -3,11 +3,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from loguru import logger
-
 from agents.chatbot_agent import CoffeeChatbotAgent
 from core.config import settings
 from core.database import init_db
+from core.logger import logger
 from forecasting.engine import CoffeeForecastEngine
 from ingestion.pipeline import IngestionPipeline
 from rag.pipeline import RAGPipeline

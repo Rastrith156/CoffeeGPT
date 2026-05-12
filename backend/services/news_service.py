@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from loguru import logger
 
 from core.config import settings
+from core.logger import logger
 from models.schemas import (
     NewsArticle,
     NewsCategory,

@@ -5,9 +5,8 @@ import json
 from collections import deque
 from datetime import datetime, timezone
 
-from loguru import logger
-
 from core.config import settings
+from core.logger import logger
 from ingestion.connectors import build_connectors
 from models.schemas import (
     IngestionJobRecord,

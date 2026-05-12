@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import sys
 from pathlib import Path
 
-# Ensure backend root is in python path
 backend_root = Path(__file__).resolve().parent
+
+
+def ensure_local_site_packages() -> None:
+    # Let the script work from an IDE even when the selected interpreter is not the project venv.
+    for candidate in (
+        backend_root / "venv" / "Lib" / "site-packages",
+        backend_root / ".venv" / "Lib" / "site-packages",
+    ):
+        if candidate.exists() and str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+            return
+
+
+ensure_local_site_packages()
+
+# Ensure backend root is in python path
 if str(backend_root) not in sys.path:
     sys.path.insert(0, str(backend_root))
 
@@ -21,7 +37,25 @@ def print_section(title: str) -> None:
     print("=" * 60)
 
 
-async def main() -> None:
+def print_items(title: str, items: list[str]) -> None:
+    if not items:
+        return
+    print(title)
+    for item in items:
+        print(f"  - {item}")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run a local smoke test for the CoffeeGPT pipeline.")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail when optional local services such as Qdrant or LM Studio are offline.",
+    )
+    return parser.parse_args()
+
+
+async def main(strict: bool = False) -> None:
     print_section("CoffeeGPT Pipeline Verification")
 
     retriever = CoffeeRetriever()
@@ -29,9 +63,8 @@ async def main() -> None:
     ingestion = IngestionPipeline(rag_pipeline=rag_pipeline)
     chatbot = CoffeeChatbotAgent(retriever=retriever)
     question = "What happened in coffee market today?"
-    indexed_ok = False
-    retrieval_ok = False
-    rag_ok = False
+    errors: list[str] = []
+    warnings: list[str] = []
 
     try:
         print_section("1. News Ingestion")
@@ -42,15 +75,27 @@ async def main() -> None:
             print(f"Ingested: {job.records_ingested}")
             print(f"Indexed:  {job.documents_indexed}")
             print(f"Detail:   {job.detail}")
-        indexed_ok = any(job.documents_indexed > 0 for job in jobs)
+        if not any(job.status == "completed" for job in jobs):
+            errors.append("News ingestion did not complete successfully.")
+
+        qdrant_available = await asyncio.to_thread(retriever.available)
+        if qdrant_available and not any(job.documents_indexed > 0 for job in jobs):
+            errors.append("Qdrant is online, but the ingestion run did not index any documents.")
+        if not qdrant_available:
+            warnings.append("Qdrant is offline, so indexing and retriever checks are informational only.")
 
         print_section("2. Retriever Search")
-        docs = await asyncio.to_thread(retriever.search, question, 3)
+        docs = []
         print(f"Question: {question}")
-        print(f"Chunks returned: {len(docs)}")
-        for index, doc in enumerate(docs, start=1):
-            print(f"  {index}. {doc.metadata.get('title', 'Untitled')} [{doc.metadata.get('source', 'unknown')}]")
-        retrieval_ok = len(docs) > 0
+        if qdrant_available:
+            docs = await asyncio.to_thread(retriever.search, question, 3)
+            print(f"Chunks returned: {len(docs)}")
+            for index, doc in enumerate(docs, start=1):
+                print(f"  {index}. {doc.metadata.get('title', 'Untitled')} [{doc.metadata.get('source', 'unknown')}]")
+            if not docs:
+                errors.append("Retriever returned no chunks even though Qdrant is online.")
+        else:
+            print("Skipped: Qdrant is offline.")
 
         print_section("3. Chatbot RAG Answer")
         response = await chatbot.answer(question=question, session_id="test_e2e_flow")
@@ -61,14 +106,25 @@ async def main() -> None:
         print(response.answer.strip())
         for citation in response.sources:
             print(f"  - {citation.source}: {citation.title}")
-        rag_ok = response.retrieval_mode == "rag"
+        if response.retrieval_mode == "rag":
+            pass
+        elif response.retrieval_mode == "retrieval_fallback":
+            warnings.append("LM Studio is offline, so the chatbot returned retrieval fallback text.")
+        elif response.retrieval_mode == "unavailable":
+            warnings.append("LM Studio is offline and no retrievable context was available.")
+        else:
+            warnings.append(f"Chatbot returned `{response.retrieval_mode}` mode instead of full RAG.")
     finally:
         await chatbot.lmstudio_client.aclose()
 
     print_section("Verification Complete")
-    if not (indexed_ok and retrieval_ok and rag_ok):
+    print_items("Warnings:", warnings)
+    print_items("Errors:", errors)
+
+    if errors or (strict and warnings):
         raise SystemExit(1)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    args = parse_args()
+    asyncio.run(main(strict=args.strict))

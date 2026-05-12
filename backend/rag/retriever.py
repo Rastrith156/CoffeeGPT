@@ -3,12 +3,12 @@ from __future__ import annotations
 from hashlib import sha1
 
 from langchain_core.documents import Document
-from loguru import logger
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 from rag.embedder import EmbeddingService
 
 from core.config import settings
+from core.logger import logger
 
 
 class CoffeeRetriever:

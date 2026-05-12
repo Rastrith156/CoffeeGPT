@@ -9,8 +9,8 @@ from urllib.parse import quote
 
 import httpx
 from bs4 import BeautifulSoup
-from loguru import logger
 
+from core.logger import logger
 from models.schemas import CommodityVariety, HistoryWindow, SourceDefinition
 
 

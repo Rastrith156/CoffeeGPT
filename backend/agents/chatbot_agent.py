@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from loguru import logger
-
 from core.config import settings
+from core.logger import logger
 from models.schemas import ChatResponse, SourceCitation
 from rag.retriever import CoffeeRetriever
 from services.lmstudio_client import LMStudioClient

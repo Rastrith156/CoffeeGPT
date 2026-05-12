@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
-from loguru import logger
 
 from core.config import settings
+from core.logger import logger
 
 
 class Base(DeclarativeBase):
