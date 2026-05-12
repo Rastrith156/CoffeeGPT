@@ -27,6 +27,16 @@ RECENCY_KEYWORDS = (
     "this week",
     "yesterday",
 )
+LOW_QUALITY_PHRASES = (
+    "i do not have access to real-time",
+    "please provide more information",
+    "please provide more context",
+    "check back later",
+    "real-time information or news updates",
+    "news.google.com/rss/articles",
+    "ooooo",
+    "roooom",
+)
 
 
 class CoffeeChatbotAgent:
@@ -128,6 +138,70 @@ class CoffeeChatbotAgent:
             f"Question:\n{question}"
         )
 
+    def _is_low_quality_answer(self, answer: str) -> bool:
+        lowered = answer.lower().strip()
+        if not lowered:
+            return True
+        if any(phrase in lowered for phrase in LOW_QUALITY_PHRASES):
+            return True
+        return False
+
+    def _build_grounded_fallback_answer(self, question: str, documents: list) -> str:
+        if not documents:
+            return (
+                "No indexed live coffee news was available for this question. "
+                "Run the RSS news ingestor and retry."
+            )
+
+        headlines = [self._clean_headline(str(document.metadata.get("title") or "untitled")) for document in documents[:3]]
+        lead_date = self._display_date(documents[0].metadata.get("published_at"))
+        sentences = []
+
+        if self._is_recency_question(question):
+            sentences.append(
+                f"As of {lead_date}, the latest live coffee market headline reports: {headlines[0]} [1]."
+            )
+        else:
+            sentences.append(f"The strongest retrieved live coffee market headline is: {headlines[0]} [1].")
+
+        if len(headlines) >= 3:
+            sentences.append(
+                f"Related coverage also includes {headlines[1]} [2] and {headlines[2]} [3]."
+            )
+        elif len(headlines) == 2:
+            sentences.append(f"Related coverage also includes {headlines[1]} [2].")
+
+        sentences.append(
+            "Taken together, the retrieved live articles suggest coffee futures and pricing sentiment remain active and volatile, with traders watching supply expectations and market direction."
+        )
+        return " ".join(sentences)
+
+    def _clean_headline(self, title: str) -> str:
+        cleaned = " ".join(title.split()).strip()
+        if " - " in cleaned:
+            cleaned = cleaned.rsplit(" - ", maxsplit=1)[0]
+        return cleaned
+
+    def _display_date(self, value) -> str:
+        if not value:
+            return "the latest available date"
+
+        text = str(value).strip()
+        if not text:
+            return "the latest available date"
+
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return parsed.date().isoformat()
+        except ValueError:
+            pass
+
+        try:
+            parsed = parsedate_to_datetime(text)
+            return parsed.date().isoformat()
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return text
+
     async def answer(self, question: str, session_id: str, use_rag: bool = True) -> ChatResponse:
         documents = []
         if use_rag:
@@ -146,10 +220,16 @@ class CoffeeChatbotAgent:
                 previous_response_id=previous_response_id,
                 store=True,
             )
-            await self._remember_response_id(session_id, lmstudio_response.response_id)
+            answer_text = lmstudio_response.text
             retrieval_mode = "rag" if documents else "llm_only"
+            if documents and self._is_low_quality_answer(answer_text):
+                logger.warning("LM Studio returned low-quality output, using grounded RAG fallback")
+                answer_text = self._build_grounded_fallback_answer(question, documents)
+                retrieval_mode = "retrieval_fallback"
+            else:
+                await self._remember_response_id(session_id, lmstudio_response.response_id)
             return ChatResponse(
-                answer=lmstudio_response.text,
+                answer=answer_text,
                 sources=citations,
                 session_id=session_id,
                 model=lmstudio_response.model_instance_id or settings.llm_model,

@@ -30,7 +30,9 @@ class CoffeeRetriever:
         if not self.available():
             return []
         try:
-            response_points = self.vector_store.query(self._embed_query(query), top_k or settings.rag_top_k)
+            requested_limit = top_k or settings.rag_top_k
+            candidate_limit = max(requested_limit, 15)
+            response_points = self.vector_store.query(self._embed_query(query), candidate_limit)
             documents: list[Document] = []
             seen_signatures: set[tuple[str, str, str, str]] = set()
             for point in response_points:
@@ -52,7 +54,7 @@ class CoffeeRetriever:
                 seen_signatures.add(signature)
                 payload["score"] = getattr(point, "score", None)
                 documents.append(Document(page_content=page_content, metadata=payload))
-            return documents
+            return documents[:requested_limit]
         except Exception as exc:
             logger.warning("Vector retrieval failed, returning no RAG context: {}", exc)
             return []

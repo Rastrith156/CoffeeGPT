@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import NAMESPACE_URL, uuid5
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
 
 from core.config import settings
 from core.logger import logger
@@ -75,6 +75,21 @@ class CoffeeVectorStore:
         self._get_client().upsert(collection_name=self.collection_name, points=points, wait=True)
         logger.info("Indexed {} document chunks into Qdrant", len(points))
         return len(points)
+
+    def delete_by_source(self, source: str) -> None:
+        self._get_client().delete(
+            collection_name=self.collection_name,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(
+                        key="source",
+                        match=MatchValue(value=source),
+                    )
+                ]
+            ),
+            wait=True,
+        )
+        logger.info("Deleted existing Qdrant points for source {}", source)
 
     def _get_client(self) -> QdrantClient:
         if self.client is None:
