@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import deque
 from datetime import datetime, timezone
@@ -74,7 +75,7 @@ class IngestionPipeline:
                 logger.info("Running ingestion connector {}", source_name)
                 records = await connector.fetch()
                 raw_path = self._write_payload(settings.raw_data_dir, source_name, records)
-                indexed_count = self.rag_pipeline.index_records(records)
+                indexed_count = await asyncio.to_thread(self.rag_pipeline.index_records, records)
                 processed_payload = {
                     "source": source_name,
                     "records_ingested": len(records),

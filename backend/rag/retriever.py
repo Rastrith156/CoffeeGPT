@@ -6,15 +6,15 @@ from langchain_core.documents import Document
 from loguru import logger
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
-from sentence_transformers import SentenceTransformer
+from rag.embedder import EmbeddingService
 
 from core.config import settings
 
 
 class CoffeeRetriever:
-    def __init__(self) -> None:
+    def __init__(self, embedder: EmbeddingService | None = None) -> None:
         self.client = None
-        self.embeddings = None
+        self.embedder = embedder or EmbeddingService()
         self._online = False
 
     def available(self) -> bool:
@@ -27,11 +27,6 @@ class CoffeeRetriever:
             self.client = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
         return self.client
 
-    def _get_embeddings(self) -> SentenceTransformer:
-        if self.embeddings is None:
-            self.embeddings = SentenceTransformer(settings.embedding_model, device="cpu")
-        return self.embeddings
-
     def _ensure_collection(self) -> None:
         try:
             client = self._get_client()
@@ -40,7 +35,7 @@ class CoffeeRetriever:
                 client.create_collection(
                     collection_name=settings.qdrant_collection,
                     vectors_config=VectorParams(
-                        size=settings.embedding_vector_size,
+                        size=self.embedder.dimension(),
                         distance=Distance.COSINE,
                     ),
                 )
@@ -51,24 +46,10 @@ class CoffeeRetriever:
             self._online = False
 
     def _embed_documents(self, texts: list[str]) -> list[list[float]]:
-        model = self._get_embeddings()
-        embeddings = model.encode(
-            texts,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-            show_progress_bar=False,
-        )
-        return embeddings.tolist()
+        return self.embedder.embed_documents(texts)
 
     def _embed_query(self, query: str) -> list[float]:
-        model = self._get_embeddings()
-        embedding = model.encode(
-            query,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-            show_progress_bar=False,
-        )
-        return embedding.tolist()
+        return self.embedder.embed_text(query)
 
     def search(self, query: str, top_k: int | None = None) -> list:
         if not self.available():
@@ -104,6 +85,7 @@ class CoffeeRetriever:
                 documents.append(Document(page_content=page_content, metadata=payload))
             return documents
         except Exception as exc:
+            self._online = False
             logger.warning("Vector retrieval failed, returning no RAG context: {}", exc)
             return []
 
@@ -113,24 +95,26 @@ class CoffeeRetriever:
         if not self.available():
             logger.warning("Skipping vector indexing because Qdrant is offline")
             return 0
-        points = [
-            PointStruct(
-                id=self._document_id(document),
-                vector=vector,
-                payload={
-                    "page_content": document.page_content,
-                    **document.metadata,
-                },
-            )
-            for document, vector in zip(
-                documents,
-                self._embed_documents([document.page_content for document in documents]),
-                strict=False,
-            )
-        ]
-        self._get_client().upsert(collection_name=settings.qdrant_collection, points=points, wait=True)
-        logger.info("Indexed {} document chunks into Qdrant", len(documents))
-        return len(documents)
+        try:
+            vectors = self._embed_documents([document.page_content for document in documents])
+            points = [
+                PointStruct(
+                    id=self._document_id(document),
+                    vector=vector,
+                    payload={
+                        "page_content": document.page_content,
+                        **document.metadata,
+                    },
+                )
+                for document, vector in zip(documents, vectors, strict=False)
+            ]
+            self._get_client().upsert(collection_name=settings.qdrant_collection, points=points, wait=True)
+            logger.info("Indexed {} document chunks into Qdrant", len(points))
+            return len(points)
+        except Exception as exc:
+            self._online = False
+            logger.warning("Vector indexing failed, skipping document batch: {}", exc)
+            return 0
 
     def _document_id(self, document) -> str:
         source = str(document.metadata.get("source", ""))

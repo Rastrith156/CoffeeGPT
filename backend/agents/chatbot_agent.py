@@ -31,22 +31,30 @@ class CoffeeChatbotAgent:
     def _build_context(self, documents: list) -> tuple[str, list[SourceCitation]]:
         context_blocks: list[str] = []
         citations: list[SourceCitation] = []
+        seen_citations: set[tuple[str, str | None, str | None]] = set()
 
         for index, document in enumerate(documents, start=1):
             source = document.metadata.get("source", "unknown")
             title = document.metadata.get("title")
             record_type = document.metadata.get("record_type")
-            citations.append(SourceCitation(source=source, title=title, record_type=record_type))
-            context_blocks.append(
-                "\n".join(
-                    [
-                        f"[{index}] source: {source}",
-                        f"title: {title or 'untitled'}",
-                        f"type: {record_type or 'general'}",
-                        document.page_content,
-                    ]
-                )
-            )
+            citation_key = (source, title, record_type)
+            if citation_key not in seen_citations:
+                citations.append(SourceCitation(source=source, title=title, record_type=record_type))
+                seen_citations.add(citation_key)
+
+            context_lines = [
+                f"[{index}] source: {source}",
+                f"title: {title or 'untitled'}",
+                f"type: {record_type or 'general'}",
+            ]
+            published_at = document.metadata.get("published_at")
+            if published_at:
+                context_lines.append(f"published_at: {published_at}")
+            url = document.metadata.get("url")
+            if url:
+                context_lines.append(f"url: {url}")
+            context_lines.append(document.page_content)
+            context_blocks.append("\n".join(context_lines))
         return "\n\n".join(context_blocks), citations
 
     async def _get_previous_response_id(self, session_id: str) -> str | None:
@@ -60,14 +68,8 @@ class CoffeeChatbotAgent:
             self._session_response_ids[session_id] = response_id
 
     def _build_user_input(self, question: str, context: str) -> str:
-        return "\n\n".join(
-            [
-                "Retrieved coffee intelligence context:",
-                context or "No indexed context was available for this question.",
-                "User question:",
-                question,
-            ]
-        )
+        ctx = context or "No indexed context was available for this question."
+        return f"Context:\n{ctx}\n\nQuestion:\n{question}"
 
     async def answer(self, question: str, session_id: str, use_rag: bool = True) -> ChatResponse:
         documents = []
