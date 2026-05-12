@@ -21,7 +21,10 @@ class EmbeddingService:
 
     def dimension(self) -> int:
         model = self._get_model()
-        dimension = model.get_sentence_embedding_dimension()
+        if hasattr(model, "get_embedding_dimension"):
+            dimension = model.get_embedding_dimension()
+        else:
+            dimension = model.get_sentence_embedding_dimension()
         return int(dimension or settings.embedding_vector_size)
 
     def embed_text(self, text: str) -> list[float]:
@@ -49,3 +52,15 @@ class EmbeddingService:
     def _normalize_text(self, text: str) -> str:
         cleaned = text.strip()
         return cleaned or " "
+
+
+def get_embedding_model(model_name: str | None = None) -> SentenceTransformer:
+    return EmbeddingService(model_name)._get_model()
+
+
+def embed_text(text: str, model_name: str | None = None) -> list[float]:
+    return EmbeddingService(model_name).embed_text(text)
+
+
+def embed_documents(texts: list[str], model_name: str | None = None) -> list[list[float]]:
+    return EmbeddingService(model_name).embed_documents(texts)
