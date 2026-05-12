@@ -1,0 +1,107 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: coffeegpt_qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: coffeegpt_postgres
+    environment:
+      POSTGRES_DB: coffeegpt
+      POSTGRES_USER: coffeegpt_user
+      POSTGRES_PASSWORD: coffeegpt_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coffeegpt_user -d coffeegpt"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: coffeegpt_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: coffeegpt_backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      APP_DEBUG: "true"
+      DATABASE_URL: postgresql://coffeegpt_user:coffeegpt_pass@postgres:5432/coffeegpt
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      QDRANT_HOST: qdrant
+      LMSTUDIO_BASE_URL: http://host.docker.internal:1234
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+      - ./data:/app/data
+      - ./backend/logs:/app/logs
+    restart: unless-stopped
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: coffeegpt_celery
+    command: celery -A core.celery_app worker --loglevel=info --concurrency=4
+    env_file:
+      - .env
+    environment:
+      APP_DEBUG: "true"
+      DATABASE_URL: postgresql://coffeegpt_user:coffeegpt_pass@postgres:5432/coffeegpt
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      QDRANT_HOST: qdrant
+      LMSTUDIO_BASE_URL: http://host.docker.internal:1234
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+      - ./data:/app/data
+      - ./backend/logs:/app/logs
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
+  postgres_data:
+  redis_data:
