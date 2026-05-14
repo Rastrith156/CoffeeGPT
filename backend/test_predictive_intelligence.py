@@ -1,6 +1,6 @@
+# ruff: noqa: E402
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 import tempfile

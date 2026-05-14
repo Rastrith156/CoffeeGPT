@@ -84,7 +84,7 @@ async def chat_stream(
             ):
                 yield f"data: {json.dumps({'token': token, 'intent': intent})}\\n\\n"
 
-        except Exception as exc:
+        except Exception:
             # Graceful fallback — try orchestrator stream_chat
             try:
                 async for token in orchestrator.stream_chat(

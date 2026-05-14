@@ -22,7 +22,6 @@ from typing import Any
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from core.config import settings
 from core.logger import logger
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -252,7 +251,7 @@ class IntentClassifier:
             "IntentClassifier: query={!r:.50} → intents={} scores={} ({:.2f}ms)",
             query,
             intents,
-            {l: round(float(s), 3) for l, s in zip(self._intent_labels, scores)},
+            {lbl: round(float(s), 3) for lbl, s in zip(self._intent_labels, scores)},
             elapsed_ms,
         )
 

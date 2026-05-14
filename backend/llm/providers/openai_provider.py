@@ -30,7 +30,7 @@ from tenacity import (
 
 from core.config import settings
 from core.logger import logger
-from llm.providers.base import LLMProviderProtocol, ProviderError, RateLimitError
+from llm.providers.base import ProviderError, RateLimitError
 
 _RETRYABLE = (httpx.TimeoutException, httpx.NetworkError, ProviderError)
 

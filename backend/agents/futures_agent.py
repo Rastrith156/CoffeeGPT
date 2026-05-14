@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from core.logger import logger
 from streaming.redis_cache import RedisMarketCache
 
 

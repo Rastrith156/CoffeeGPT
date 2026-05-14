@@ -7,7 +7,6 @@ from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, P
 
 from core.config import settings
 from core.logger import logger
-from core.errors import RetrievalError
 
 # Module-level Qdrant singleton — prevents connection leak when store is instantiated multiple times
 _QDRANT_CLIENT: QdrantClient | None = None

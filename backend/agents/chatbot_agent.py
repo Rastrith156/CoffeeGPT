@@ -546,8 +546,8 @@ class CoffeeChatbotAgent:
                 return ""
 
             lines = ["[LIVE MARKET STATE — Redis hot cache]",
-                     f"source: redis_stream",
-                     f"type: live_market_snapshot"]
+                     "source: redis_stream",
+                     "type: live_market_snapshot"]
             if a_price > 0:
                 a_change = float(arabica.get("change_percent") or 0)
                 lines.append(f"arabica_price: {a_price:.2f} US cents/lb ({a_change:+.2f}%)")

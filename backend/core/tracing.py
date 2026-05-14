@@ -11,7 +11,6 @@ One line per integration as required.
 """
 from __future__ import annotations
 
-import logging
 
 from core.config import settings
 from core.logger import logger

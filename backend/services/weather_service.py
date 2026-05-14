@@ -9,7 +9,6 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from core.config import settings
-from core.errors import APIError
 from core.logger import logger
 from models.schemas import (
     RiskAssessmentResponse,

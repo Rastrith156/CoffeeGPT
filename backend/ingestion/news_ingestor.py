@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 from __future__ import annotations
 
 import asyncio
@@ -185,7 +186,7 @@ class NewsIngestor:
                 "records_ingested": len(records),
                 "documents_indexed": indexed_count,
                 "feed_count": len(self.RSS_FEEDS),
-                "raw_snapshot": raw_path.name,
+                "raw_snapshot": Path(raw_path).name,
             }
             processed_path = self.ingestion_pipeline._write_payload(
                 settings.processed_data_dir,
@@ -199,7 +200,7 @@ class NewsIngestor:
                 documents_indexed=indexed_count,
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
-                detail=f"feeds={len(self.RSS_FEEDS)}; raw={raw_path.name}; processed={processed_path.name}",
+                detail=f"feeds={len(self.RSS_FEEDS)}; raw={Path(raw_path).name}; processed={Path(processed_path).name}",
                 dispatch_mode=dispatch_mode,
             )
         except Exception as exc:

@@ -27,7 +27,7 @@ from tenacity import (
 
 from core.config import settings
 from core.logger import logger
-from llm.providers.base import LLMProviderProtocol, ProviderError, RateLimitError
+from llm.providers.base import ProviderError, RateLimitError
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_API_VERSION = "2023-06-01"

@@ -22,7 +22,6 @@ Fail-open: if Redis is unavailable, requests pass through gracefully.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from functools import lru_cache
 from typing import Callable
 
 import redis.asyncio as aioredis

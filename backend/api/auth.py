@@ -13,11 +13,11 @@ to enable server-side invalidation (logout / revocation).
 """
 from __future__ import annotations
 
-from datetime import timedelta
+
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPBearer
 from pydantic import BaseModel
 
 from core.config import settings

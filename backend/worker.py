@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
-from core.config import settings
 from core.logger import logger, setup_logger
 
 # Import services that need to run in the background
