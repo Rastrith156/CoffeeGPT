@@ -97,6 +97,9 @@ class CoffeeVectorStore:
         return self.client
 
     def _document_id(self, document) -> str:
+        explicit_id = str(document.metadata.get("document_id") or "").strip()
+        if explicit_id:
+            return str(uuid5(NAMESPACE_URL, explicit_id))
         source = str(document.metadata.get("source", ""))
         title = str(document.metadata.get("title", ""))
         record_type = str(document.metadata.get("record_type", ""))

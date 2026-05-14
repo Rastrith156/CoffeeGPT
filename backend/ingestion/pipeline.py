@@ -38,7 +38,7 @@ class IngestionPipeline:
             market_service=self.market_service,
             weather_service=self.weather_service,
             news_service=self.news_service,
-            regions=settings.default_regions,
+            regions=settings.weather_regions,
         )
 
     async def run(
@@ -53,6 +53,14 @@ class IngestionPipeline:
         results: list[IngestionJobRecord] = []
 
         for source_name in sources:
+            if source_name == IngestionSource.futures.value:
+                from ingestion.futures_ingestor import FuturesIngestor
+
+                futures_ingestor = FuturesIngestor(ingestion_pipeline=self)
+                futures_jobs = await futures_ingestor.ingest_once(dispatch_mode=dispatch_mode)
+                results.extend(futures_jobs)
+                continue
+
             started_at = datetime.now(timezone.utc)
             connector = self.connectors.get(source_name)
             if connector is None:

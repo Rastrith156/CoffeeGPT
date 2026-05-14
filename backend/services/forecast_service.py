@@ -2,14 +2,21 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from forecasting.correlation_engine import CorrelationEngine
 from forecasting.engine import CoffeeForecastEngine
+from forecasting.market_snapshot import MarketSnapshotGenerator
 from models.schemas import (
+    AlertFeedResponse,
     CommodityVariety,
     DemandForecastResponse,
+    MarketCorrelationResponse,
+    MarketIntelligenceSnapshotResponse,
+    MarketRiskAssessmentResponse,
     PriceForecastResponse,
     SupplyRiskResponse,
 )
 from services.market_service import MarketService
+from services.news_service import NewsService
 from services.weather_service import WeatherService
 
 
@@ -19,10 +26,21 @@ class ForecastService:
         engine: CoffeeForecastEngine | None = None,
         market_service: MarketService | None = None,
         weather_service: WeatherService | None = None,
+        news_service: NewsService | None = None,
+        correlation_engine: CorrelationEngine | None = None,
+        snapshot_generator: MarketSnapshotGenerator | None = None,
     ) -> None:
         self.engine = engine or CoffeeForecastEngine()
         self.market_service = market_service or MarketService()
         self.weather_service = weather_service or WeatherService()
+        self.news_service = news_service or NewsService()
+        self.correlation_engine = correlation_engine or CorrelationEngine()
+        self.snapshot_generator = snapshot_generator or MarketSnapshotGenerator(
+            market_service=self.market_service,
+            weather_service=self.weather_service,
+            news_service=self.news_service,
+            correlation_engine=self.correlation_engine,
+        )
 
     async def forecast_price(
         self,
@@ -67,3 +85,27 @@ class ForecastService:
             assessed_at=datetime.now(timezone.utc),
             engine=self.engine.metadata(),
         )
+
+    async def market_correlations(self) -> MarketCorrelationResponse:
+        return await self.snapshot_generator.correlation_report()
+
+    async def market_risk_assessment(self) -> MarketRiskAssessmentResponse:
+        snapshot = await self.snapshot_generator.generate()
+        if snapshot.risk_assessment is None:
+            raise ValueError("Market risk assessment could not be generated.")
+        return snapshot.risk_assessment
+
+    async def market_alerts(self) -> AlertFeedResponse:
+        snapshot = await self.snapshot_generator.generate()
+        if snapshot.alert_feed is not None:
+            return snapshot.alert_feed
+        return AlertFeedResponse(
+            generated_at=snapshot.generated_at,
+            summary="No proactive market intelligence alerts are active.",
+            count=0,
+            alerts=[],
+            service_mode="heuristic_alert_engine",
+        )
+
+    async def market_intelligence_snapshot(self) -> MarketIntelligenceSnapshotResponse:
+        return await self.snapshot_generator.generate()

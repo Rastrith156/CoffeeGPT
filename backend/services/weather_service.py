@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import unicodedata
 
 import httpx
 
@@ -15,23 +16,125 @@ from models.schemas import (
     WeatherForecastResponse,
 )
 
-REGION_COORDS = {
-    "yirgacheffe": (6.1500, 38.2000),
-    "sidama": (6.7500, 38.5000),
-    "minas gerais": (-19.9167, -43.9345),
-    "huila": (2.5359, -75.5277),
-    "sumatra": (3.5952, 98.6722),
-    "kilimanjaro": (-3.0674, 37.3556),
+
+@dataclass(frozen=True, slots=True)
+class WeatherRegionProfile:
+    name: str
+    country: str
+    lat: float
+    lon: float
+    aliases: tuple[str, ...] = ()
+
+
+@dataclass(slots=True)
+class WeatherSnapshot:
+    profile: WeatherRegionProfile
+    current: WeatherCurrentResponse
+    forecast: WeatherForecastResponse
+
+
+REGION_PROFILES = (
+    WeatherRegionProfile("Chikmagalur", "India", 13.3152, 75.7754, aliases=("chikkamagaluru",)),
+    WeatherRegionProfile("Kodagu", "India", 12.4244, 75.7382, aliases=("coorg",)),
+    WeatherRegionProfile("Hassan", "India", 13.0033, 76.1004),
+    WeatherRegionProfile("Sakleshpur", "India", 12.9447, 75.7860),
+    WeatherRegionProfile("Sul de Minas", "Brazil", -21.5513, -45.4303, aliases=("south minas",)),
+    WeatherRegionProfile("Cerrado Mineiro", "Brazil", -18.9436, -46.9926, aliases=("cerrado",)),
+    WeatherRegionProfile("Espirito Santo", "Brazil", -19.1834, -40.3089, aliases=("espirito", "espirito santo")),
+    WeatherRegionProfile("Minas Gerais", "Brazil", -19.9167, -43.9345),
+    WeatherRegionProfile("Dak Lak", "Vietnam", 12.7100, 108.2378, aliases=("daklak",)),
+    WeatherRegionProfile("Lam Dong", "Vietnam", 11.9404, 108.4583, aliases=("dalat",)),
+    WeatherRegionProfile("Gia Lai", "Vietnam", 13.9833, 108.0000),
+    WeatherRegionProfile("Yirgacheffe", "Ethiopia", 6.1500, 38.2000),
+    WeatherRegionProfile("Sidama", "Ethiopia", 6.7500, 38.5000),
+    WeatherRegionProfile("Huila", "Colombia", 2.5359, -75.5277),
+    WeatherRegionProfile("Sumatra", "Indonesia", 3.5952, 98.6722),
+    WeatherRegionProfile("Kilimanjaro", "Tanzania", -3.0674, 37.3556),
+)
+
+WMO_CODE_DESCRIPTIONS = {
+    0: "clear sky",
+    1: "mainly clear",
+    2: "partly cloudy",
+    3: "overcast",
+    45: "fog",
+    48: "depositing rime fog",
+    51: "light drizzle",
+    53: "moderate drizzle",
+    55: "dense drizzle",
+    56: "light freezing drizzle",
+    57: "dense freezing drizzle",
+    61: "slight rain",
+    63: "moderate rain",
+    65: "heavy rain",
+    66: "light freezing rain",
+    67: "heavy freezing rain",
+    71: "slight snow",
+    73: "moderate snow",
+    75: "heavy snow",
+    77: "snow grains",
+    80: "slight rain showers",
+    81: "moderate rain showers",
+    82: "violent rain showers",
+    85: "slight snow showers",
+    86: "heavy snow showers",
+    95: "thunderstorm",
+    96: "thunderstorm with slight hail",
+    99: "thunderstorm with heavy hail",
 }
 
 
-class WeatherService:
-    BASE_URL = "https://api.openweathermap.org/data/2.5"
+def _normalize_region_key(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    return " ".join(ascii_only.lower().split()).strip()
 
-    def _get_coords(self, region: str, lat: float | None = None, lon: float | None = None) -> tuple[float, float]:
+
+REGION_INDEX: dict[str, WeatherRegionProfile] = {}
+for profile in REGION_PROFILES:
+    REGION_INDEX[_normalize_region_key(profile.name)] = profile
+    for alias in profile.aliases:
+        REGION_INDEX[_normalize_region_key(alias)] = profile
+
+
+class WeatherService:
+    BASE_URL = "https://api.open-meteo.com/v1/forecast"
+    CURRENT_FIELDS = ",".join(
+        (
+            "temperature_2m",
+            "relative_humidity_2m",
+            "precipitation",
+            "wind_speed_10m",
+            "weather_code",
+        )
+    )
+    DAILY_FIELDS = ",".join(
+        (
+            "temperature_2m_mean",
+            "relative_humidity_2m_mean",
+            "precipitation_sum",
+            "wind_speed_10m_max",
+            "precipitation_probability_max",
+            "weather_code",
+        )
+    )
+
+    def supported_regions(self) -> list[str]:
+        return [profile.name for profile in REGION_PROFILES]
+
+    def _resolve_region_profile(
+        self,
+        region: str,
+        lat: float | None = None,
+        lon: float | None = None,
+    ) -> WeatherRegionProfile:
         if lat is not None and lon is not None:
-            return lat, lon
-        return REGION_COORDS.get(region.lower(), (6.15, 38.20))
+            return WeatherRegionProfile(name=region or "custom", country="custom", lat=lat, lon=lon)
+
+        profile = REGION_INDEX.get(_normalize_region_key(region))
+        if profile is not None:
+            return profile
+        return REGION_INDEX["minas gerais"]
 
     def _risk_level(self, score: float) -> str:
         if score >= 0.75:
@@ -42,64 +145,44 @@ class WeatherService:
             return "low"
         return "minimal"
 
+    async def get_snapshot(
+        self,
+        region: str,
+        days: int = 7,
+        lat: float | None = None,
+        lon: float | None = None,
+    ) -> WeatherSnapshot:
+        profile = self._resolve_region_profile(region, lat, lon)
+        live_snapshot = await self._live_snapshot(profile, days)
+        if live_snapshot is not None:
+            return live_snapshot
+        return self._demo_snapshot(profile, days)
+
     async def get_current(
         self,
         region: str,
         lat: float | None = None,
         lon: float | None = None,
     ) -> WeatherCurrentResponse:
-        resolved_lat, resolved_lon = self._get_coords(region, lat, lon)
-        if not settings.openweather_api_key:
-            return self._demo_current(region, resolved_lat, resolved_lon)
-
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(
-                    f"{self.BASE_URL}/weather",
-                    params={
-                        "lat": resolved_lat,
-                        "lon": resolved_lon,
-                        "appid": settings.openweather_api_key,
-                        "units": "metric",
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-        except Exception as exc:
-            logger.warning("Weather API failed, using demo data: {}", exc)
-            return self._demo_current(region, resolved_lat, resolved_lon)
-
-        return WeatherCurrentResponse(
-            region=region,
-            lat=resolved_lat,
-            lon=resolved_lon,
-            temperature_c=float(payload["main"]["temp"]),
-            humidity_pct=float(payload["main"]["humidity"]),
-            rainfall_mm=float(payload.get("rain", {}).get("1h", 0.0)),
-            wind_speed_ms=float(payload["wind"]["speed"]),
-            description=payload["weather"][0]["description"],
-            timestamp=datetime.now(timezone.utc),
-            service_mode="live_openweather",
-        )
+        snapshot = await self.get_snapshot(region=region, days=settings.weather_forecast_days, lat=lat, lon=lon)
+        return snapshot.current
 
     async def get_forecast(self, region: str, days: int = 7) -> WeatherForecastResponse:
-        resolved_lat, resolved_lon = self._get_coords(region)
-        if settings.openweather_api_key:
-            live_forecast = await self._live_forecast(region, resolved_lat, resolved_lon, days)
-            if live_forecast:
-                return live_forecast
-        return self._demo_forecast(region, resolved_lat, resolved_lon, days)
+        snapshot = await self.get_snapshot(region=region, days=days)
+        return snapshot.forecast
 
     async def get_risk_assessment(self, region: str) -> RiskAssessmentResponse:
         forecast = await self.get_forecast(region, days=5)
         avg_humidity = sum(point.humidity_pct for point in forecast.forecast) / len(forecast.forecast)
         avg_rainfall = sum(point.rainfall_mm for point in forecast.forecast) / len(forecast.forecast)
         min_temp = min(point.temp_c for point in forecast.forecast)
+        avg_wind = sum(point.wind_speed_ms for point in forecast.forecast) / len(forecast.forecast)
 
-        rust_score = min(0.95, 0.12 + (avg_humidity / 100.0) * 0.68 + min(avg_rainfall, 12.0) / 30.0)
-        berry_score = min(0.9, 0.08 + (avg_rainfall / 18.0) + (avg_humidity / 220.0))
-        drought_score = max(0.05, 0.7 - (avg_rainfall / 16.0))
+        rust_score = min(0.95, 0.10 + (avg_humidity / 100.0) * 0.65 + min(avg_rainfall, 14.0) / 32.0)
+        berry_score = min(0.9, 0.08 + (avg_rainfall / 18.0) + (avg_humidity / 240.0))
+        drought_score = max(0.05, 0.72 - (avg_rainfall / 16.0))
         frost_score = 0.65 if min_temp <= 4 else 0.05
+        wind_disruption_score = min(0.8, max(0.05, avg_wind / 18.0))
 
         risks = [
             RiskSignal(
@@ -126,6 +209,12 @@ class WeatherService:
                 score=round(frost_score, 2),
                 trigger=f"min temp {min_temp:.1f} C",
             ),
+            RiskSignal(
+                name="wind_disruption",
+                level=self._risk_level(wind_disruption_score),
+                score=round(wind_disruption_score, 2),
+                trigger=f"avg wind {avg_wind:.1f} m/s",
+            ),
         ]
         overall_score = max(item.score for item in risks)
 
@@ -137,83 +226,138 @@ class WeatherService:
             service_mode=forecast.service_mode,
         )
 
-    async def _live_forecast(
-        self,
-        region: str,
-        lat: float,
-        lon: float,
-        days: int,
-    ) -> WeatherForecastResponse | None:
+    async def _live_snapshot(self, profile: WeatherRegionProfile, days: int) -> WeatherSnapshot | None:
+        forecast_days = max(1, min(days, 14))
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=12) as client:
                 response = await client.get(
-                    f"{self.BASE_URL}/forecast",
+                    self.BASE_URL,
                     params={
-                        "lat": lat,
-                        "lon": lon,
-                        "appid": settings.openweather_api_key,
-                        "units": "metric",
+                        "latitude": profile.lat,
+                        "longitude": profile.lon,
+                        "current": self.CURRENT_FIELDS,
+                        "daily": self.DAILY_FIELDS,
+                        "forecast_days": forecast_days,
+                        "timezone": "auto",
+                        "wind_speed_unit": "ms",
+                        "temperature_unit": "celsius",
+                        "precipitation_unit": "mm",
                     },
                 )
                 response.raise_for_status()
                 payload = response.json()
         except Exception as exc:
-            logger.warning("Weather forecast API failed, using demo data: {}", exc)
+            logger.warning("Open-Meteo weather request failed for {}: {}", profile.name, exc)
             return None
 
-        daily_values: dict[str, list[dict]] = defaultdict(list)
-        for item in payload.get("list", []):
-            day_key = item["dt_txt"].split(" ")[0]
-            daily_values[day_key].append(item)
+        current_payload = payload.get("current") or {}
+        daily_payload = payload.get("daily") or {}
+        if not current_payload or not daily_payload:
+            logger.warning("Open-Meteo returned incomplete payload for {}", profile.name)
+            return None
 
-        points: list[WeatherForecastPoint] = []
-        for index, (day_key, items) in enumerate(list(daily_values.items())[:days], start=1):
-            points.append(
+        current = WeatherCurrentResponse(
+            region=profile.name,
+            lat=float(payload.get("latitude", profile.lat)),
+            lon=float(payload.get("longitude", profile.lon)),
+            temperature_c=self._coerce_float(current_payload.get("temperature_2m")),
+            humidity_pct=self._coerce_float(current_payload.get("relative_humidity_2m")),
+            rainfall_mm=self._coerce_float(current_payload.get("precipitation")),
+            wind_speed_ms=self._coerce_float(current_payload.get("wind_speed_10m")),
+            description=self._weather_code_description(current_payload.get("weather_code")),
+            timestamp=self._parse_payload_datetime(current_payload.get("time"), payload.get("utc_offset_seconds")),
+            service_mode="live_open_meteo",
+        )
+
+        forecast_points: list[WeatherForecastPoint] = []
+        daily_dates = list(daily_payload.get("time") or [])
+        for index, day_key in enumerate(daily_dates[:forecast_days], start=1):
+            forecast_points.append(
                 WeatherForecastPoint(
                     day=index,
-                    date=day_key,
-                    temp_c=round(sum(entry["main"]["temp"] for entry in items) / len(items), 1),
-                    humidity_pct=round(sum(entry["main"]["humidity"] for entry in items) / len(items), 1),
-                    rainfall_mm=round(sum(entry.get("rain", {}).get("3h", 0.0) for entry in items), 1),
+                    date=str(day_key),
+                    temp_c=self._series_value(daily_payload, "temperature_2m_mean", index - 1),
+                    humidity_pct=self._series_value(daily_payload, "relative_humidity_2m_mean", index - 1),
+                    rainfall_mm=self._series_value(daily_payload, "precipitation_sum", index - 1),
+                    wind_speed_ms=self._series_value(daily_payload, "wind_speed_10m_max", index - 1),
+                    precipitation_probability_pct=self._series_value(
+                        daily_payload,
+                        "precipitation_probability_max",
+                        index - 1,
+                    ),
                 )
             )
 
-        return WeatherForecastResponse(
-            region=region,
-            days=len(points),
-            forecast=points,
-            service_mode="live_openweather",
+        forecast = WeatherForecastResponse(
+            region=profile.name,
+            days=len(forecast_points),
+            forecast=forecast_points,
+            service_mode="live_open_meteo",
         )
+        return WeatherSnapshot(profile=profile, current=current, forecast=forecast)
 
-    def _demo_current(self, region: str, lat: float, lon: float) -> WeatherCurrentResponse:
-        return WeatherCurrentResponse(
-            region=region,
-            lat=lat,
-            lon=lon,
-            temperature_c=19.4,
-            humidity_pct=74.0,
-            rainfall_mm=3.2,
-            wind_speed_ms=2.1,
+    def _demo_snapshot(self, profile: WeatherRegionProfile, days: int) -> WeatherSnapshot:
+        forecast_days = max(1, min(days, 14))
+        now = datetime.now(timezone.utc)
+        current = WeatherCurrentResponse(
+            region=profile.name,
+            lat=profile.lat,
+            lon=profile.lon,
+            temperature_c=20.4,
+            humidity_pct=78.0,
+            rainfall_mm=2.8,
+            wind_speed_ms=3.1,
             description="partly cloudy",
-            timestamp=datetime.now(timezone.utc),
-            service_mode="demo_weather_profile",
+            timestamp=now,
+            service_mode="demo_open_meteo_profile",
         )
+        forecast = WeatherForecastResponse(
+            region=profile.name,
+            days=forecast_days,
+            forecast=[
+                WeatherForecastPoint(
+                    day=index + 1,
+                    date=(now + timedelta(days=index + 1)).date().isoformat(),
+                    temp_c=round(19.6 + (index * 0.35), 1),
+                    humidity_pct=round(80.0 - min(index * 1.2, 8.0), 1),
+                    rainfall_mm=round(max(0.7, 6.2 - (index * 0.45)), 1),
+                    wind_speed_ms=round(3.2 + (index * 0.15), 1),
+                    precipitation_probability_pct=round(max(18.0, 72.0 - (index * 6.0)), 1),
+                )
+                for index in range(forecast_days)
+            ],
+            service_mode="demo_open_meteo_profile",
+        )
+        return WeatherSnapshot(profile=profile, current=current, forecast=forecast)
 
-    def _demo_forecast(self, region: str, lat: float, lon: float, days: int) -> WeatherForecastResponse:
-        today = datetime.now(timezone.utc)
-        forecast = [
-            WeatherForecastPoint(
-                day=index + 1,
-                date=(today + timedelta(days=index + 1)).date().isoformat(),
-                temp_c=round(18.8 + (index * 0.35), 1),
-                humidity_pct=round(76.0 - index, 1),
-                rainfall_mm=round(max(0.8, 5.6 - (index * 0.55)), 1),
-            )
-            for index in range(days)
-        ]
-        return WeatherForecastResponse(
-            region=region,
-            days=days,
-            forecast=forecast,
-            service_mode="demo_weather_profile",
-        )
+    def _parse_payload_datetime(self, value, utc_offset_seconds) -> datetime:
+        text = str(value or "").strip()
+        if not text:
+            return datetime.now(timezone.utc)
+
+        try:
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is not None:
+                return parsed
+            offset = int(utc_offset_seconds or 0)
+            return parsed.replace(tzinfo=timezone(timedelta(seconds=offset)))
+        except (TypeError, ValueError):
+            return datetime.now(timezone.utc)
+
+    def _series_value(self, payload: dict, key: str, index: int) -> float:
+        series = payload.get(key) or []
+        if index >= len(series):
+            return 0.0
+        return self._coerce_float(series[index])
+
+    def _weather_code_description(self, value) -> str:
+        try:
+            return WMO_CODE_DESCRIPTIONS.get(int(value), "unclassified weather")
+        except (TypeError, ValueError):
+            return "unclassified weather"
+
+    def _coerce_float(self, value) -> float:
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0

@@ -62,8 +62,11 @@ async def main(strict: bool = False) -> None:
     rag_pipeline = RAGPipeline(retriever=retriever)
     ingestion = IngestionPipeline(rag_pipeline=rag_pipeline)
     chatbot = CoffeeChatbotAgent(retriever=retriever)
-    retrieval_question = "Why may coffee prices rise?"
-    chat_question = "What happened in coffee market today?"
+    retrieval_question = "Will coffee prices rise this week after heavy rainfall in Brazil?"
+    weather_question = "Will rain affect coffee crops this week in Kodagu?"
+    futures_question = "Why are coffee futures moving today?"
+    decision_question = "Is market risk increasing this week?"
+    chat_question = "Should I sell coffee now?"
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -110,22 +113,99 @@ async def main(strict: bool = False) -> None:
         if not qdrant_available:
             warnings.append("Qdrant is offline, so indexing and retriever checks are informational only.")
 
-        print_section("2. Retriever Search")
+        print_section("2. Weather Ingestion")
+        weather_jobs = await ingestion.run(source="weather")
+        for job in weather_jobs:
+            print(f"Source:   {job.source}")
+            print(f"Status:   {job.status}")
+            print(f"Ingested: {job.records_ingested}")
+            print(f"Indexed:  {job.documents_indexed}")
+            print(f"Detail:   {job.detail}")
+        if not any(job.status == "completed" for job in weather_jobs):
+            errors.append("Weather ingestion did not complete successfully.")
+        if qdrant_available and not any(job.documents_indexed > 0 for job in weather_jobs):
+            errors.append("Qdrant is online, but the weather ingestion run did not index any documents.")
+
+        print_section("3. Futures Ingestion")
+        futures_jobs = await ingestion.run(source="futures")
+        for job in futures_jobs:
+            print(f"Source:   {job.source}")
+            print(f"Status:   {job.status}")
+            print(f"Ingested: {job.records_ingested}")
+            print(f"Indexed:  {job.documents_indexed}")
+            print(f"Detail:   {job.detail}")
+        if not any(job.status == "completed" for job in futures_jobs):
+            errors.append("Futures ingestion did not complete successfully.")
+        if qdrant_available and not any(job.documents_indexed > 0 for job in futures_jobs):
+            errors.append("Qdrant is online, but the futures ingestion run did not index any documents.")
+
+        print_section("4. Unified Retriever Search")
         docs = []
         print(f"Question: {retrieval_question}")
         if qdrant_available:
-            docs = await asyncio.to_thread(retriever.search, retrieval_question, 3)
+            docs = await asyncio.to_thread(retriever.search, retrieval_question, 10)
             print(f"Chunks returned: {len(docs)}")
-            for index, doc in enumerate(docs, start=1):
+            for index, doc in enumerate(docs[:5], start=1):
                 print(f"  {index}. {doc.metadata.get('title', 'Untitled')} [{doc.metadata.get('source', 'unknown')}]")
             if not docs:
                 errors.append("Retriever returned no chunks even though Qdrant is online.")
-            elif docs[0].metadata.get("source") != "bootstrap_news":
-                errors.append("Bootstrap rainfall article was not the top retriever match for the validation question.")
+            else:
+                retrieved_sources = {str(doc.metadata.get("source") or "") for doc in docs}
+                if "futures" not in retrieved_sources:
+                    errors.append("Unified retrieval did not return futures context for the market question.")
+                if "weather" not in retrieved_sources:
+                    errors.append("Unified retrieval did not return weather context for the market question.")
+                if not any(source.startswith("news") or source == "bootstrap_news" for source in retrieved_sources):
+                    errors.append("Unified retrieval did not return any news context for the market question.")
         else:
             print("Skipped: Qdrant is offline.")
 
-        print_section("3. Chatbot RAG Answer")
+        print_section("5. Weather Retriever Search")
+        weather_docs = []
+        print(f"Question: {weather_question}")
+        if qdrant_available:
+            weather_docs = await asyncio.to_thread(retriever.search, weather_question, 8)
+            weather_docs = [doc for doc in weather_docs if doc.metadata.get("source") == "weather"]
+            print(f"Weather chunks returned: {len(weather_docs)}")
+            for index, doc in enumerate(weather_docs[:3], start=1):
+                print(f"  {index}. {doc.metadata.get('title', 'Untitled')} [{doc.metadata.get('region', 'unknown')}]")
+            if not weather_docs:
+                errors.append("Weather retrieval returned no weather chunks even though weather ingestion completed.")
+        else:
+            print("Skipped: Qdrant is offline.")
+
+        print_section("6. Futures Retriever Search")
+        print(f"Question: {futures_question}")
+        if qdrant_available:
+            futures_docs = await asyncio.to_thread(retriever.search, futures_question, 8)
+            futures_docs = [doc for doc in futures_docs if doc.metadata.get("source") == "futures"]
+            print(f"Futures chunks returned: {len(futures_docs)}")
+            for index, doc in enumerate(futures_docs[:3], start=1):
+                print(f"  {index}. {doc.metadata.get('title', 'Untitled')} [{doc.metadata.get('market', 'unknown')}]")
+            if not futures_docs:
+                errors.append("Futures retrieval returned no futures chunks even though futures ingestion completed.")
+        else:
+            print("Skipped: Qdrant is offline.")
+
+        print_section("7. Decision-Support Retriever Search")
+        print(f"Question: {decision_question}")
+        if qdrant_available:
+            decision_docs = await asyncio.to_thread(retriever.search, decision_question, 8)
+            print(f"Decision-support chunks returned: {len(decision_docs)}")
+            for index, doc in enumerate(decision_docs[:5], start=1):
+                print(
+                    f"  {index}. {doc.metadata.get('title', 'Untitled')} "
+                    f"[{doc.metadata.get('source', 'unknown')}]"
+                )
+            decision_sources = {str(doc.metadata.get('source') or '') for doc in decision_docs}
+            if "forecasting" not in decision_sources:
+                errors.append(
+                    "Decision-support retrieval did not return forecasting artifacts for the market-risk question."
+                )
+        else:
+            print("Skipped: Qdrant is offline.")
+
+        print_section("8. Chatbot RAG Answer")
         print(f"Question: {chat_question}")
         response = await chatbot.answer(question=chat_question, session_id="test_e2e_flow")
         print(f"Retrieval mode: {response.retrieval_mode}")

@@ -64,6 +64,18 @@ class Settings(BaseSettings):
     chunk_size: int = Field(default=1000, alias="CHUNK_SIZE")
     chunk_overlap: int = Field(default=200, alias="CHUNK_OVERLAP")
     rag_top_k: int = Field(default=5, alias="RAG_TOP_K")
+    weather_forecast_days: int = Field(default=7, alias="WEATHER_FORECAST_DAYS")
+    weather_poll_interval_seconds: int = Field(default=21600, alias="WEATHER_POLL_INTERVAL_SECONDS")
+    futures_poll_interval_seconds: int = Field(default=21600, alias="FUTURES_POLL_INTERVAL_SECONDS")
+
+    # ── HOT LAYER (streaming) config ────────────────────────────────────────
+    stream_interval_seconds: int = Field(default=30, alias="STREAM_INTERVAL_SECONDS")
+    monitor_interval_seconds: int = Field(default=15, alias="MONITOR_INTERVAL_SECONDS")
+    intelligence_loop_interval_seconds: int = Field(default=120, alias="INTELLIGENCE_LOOP_INTERVAL_SECONDS")
+    spike_threshold_pct: float = Field(default=2.0, alias="SPIKE_THRESHOLD_PCT")
+    high_volatility_threshold_pct: float = Field(default=2.5, alias="HIGH_VOLATILITY_THRESHOLD_PCT")
+    redis_price_ttl_seconds: int = Field(default=60, alias="REDIS_PRICE_TTL_SECONDS")
+    redis_alert_ttl_seconds: int = Field(default=300, alias="REDIS_ALERT_TTL_SECONDS")
 
     cors_origins: list[str] = Field(
         default_factory=lambda: [
@@ -75,6 +87,21 @@ class Settings(BaseSettings):
     default_regions: list[str] = Field(
         default_factory=lambda: ["Yirgacheffe", "Sidama", "Minas Gerais", "Huila"],
         alias="DEFAULT_REGIONS",
+    )
+    weather_regions: list[str] = Field(
+        default_factory=lambda: [
+            "Chikmagalur",
+            "Kodagu",
+            "Hassan",
+            "Sakleshpur",
+            "Sul de Minas",
+            "Cerrado Mineiro",
+            "Espirito Santo",
+            "Dak Lak",
+            "Lam Dong",
+            "Gia Lai",
+        ],
+        alias="WEATHER_REGIONS",
     )
 
     @property

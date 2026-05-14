@@ -34,6 +34,7 @@ class NewsCategory(str, Enum):
 class IngestionSource(str, Enum):
     all = "all"
     prices = "prices"
+    futures = "futures"
     news = "news"
     weather = "weather"
     policies = "policies"
@@ -98,12 +99,23 @@ class MarketPricesResponse(APIModel):
 
 
 class FuturesContract(APIModel):
+    market_key: str
     symbol: str
     market: str
     price: float
     currency: str
     change: float
-    volume: int
+    change_percent: float = 0.0
+    volume: int | None = None
+    volatility_pct: float = 0.0
+    open_interest: int | None = None
+    open_price: float | None = None
+    high_price: float | None = None
+    low_price: float | None = None
+    previous_close: float | None = None
+    contract_month: str | None = None
+    timestamp: datetime | None = None
+    source_mode: str | None = None
 
 
 class MarketFuturesResponse(APIModel):
@@ -134,6 +146,19 @@ class MarketSummaryResponse(APIModel):
     service_mode: str
 
 
+class HistoricalFuturesSnapshot(APIModel):
+    market: str
+    price: float
+    change_percent: float
+    volatility: float
+    timestamp: datetime
+    snapshot_date: str | None = None
+    currency: str | None = None
+    symbol: str | None = None
+    contract_month: str | None = None
+    source_mode: str | None = None
+
+
 class WeatherCurrentResponse(APIModel):
     region: str
     lat: float
@@ -153,6 +178,8 @@ class WeatherForecastPoint(APIModel):
     temp_c: float
     humidity_pct: float
     rainfall_mm: float
+    wind_speed_ms: float = 0.0
+    precipitation_probability_pct: float = 0.0
 
 
 class WeatherForecastResponse(APIModel):
@@ -269,6 +296,103 @@ class SupplyRiskResponse(APIModel):
     factors: dict[str, dict[str, float | str]]
     assessed_at: datetime
     engine: ForecastEngineMetadata
+
+
+class RiskFactorScore(APIModel):
+    factor: str
+    score: float
+    weight: float
+    summary: str
+    evidence: list[str] = Field(default_factory=list)
+
+
+class MarketRiskAssessmentResponse(APIModel):
+    market_risk: str
+    market_risk_score: float
+    weather_risk: float
+    supply_risk: float
+    volatility_risk: float
+    confidence: float
+    explanation: str
+    factors: list[RiskFactorScore] = Field(default_factory=list)
+    generated_at: datetime
+    service_mode: str
+
+
+class IntelligenceAlert(APIModel):
+    alert_id: str
+    title: str
+    message: str
+    severity: str
+    category: str
+    market: str | None = None
+    region: str | None = None
+    confidence: float
+    supporting_signals: dict[str, str | float] = Field(default_factory=dict)
+    triggered_at: datetime
+    service_mode: str
+
+
+class AlertFeedResponse(APIModel):
+    generated_at: datetime
+    summary: str
+    count: int
+    alerts: list[IntelligenceAlert] = Field(default_factory=list)
+    service_mode: str
+
+
+class CorrelationDriver(APIModel):
+    driver_type: str
+    signal: str
+    impact: str
+    confidence: float
+    evidence: list[str] = Field(default_factory=list)
+
+
+class MarketCorrelationInsight(APIModel):
+    market: str
+    direction: str
+    confidence: float
+    causal_summary: str
+    drivers: list[CorrelationDriver] = Field(default_factory=list)
+    price: float
+    change_percent: float
+    volatility: float
+    anomaly_flag: str | None = None
+    supporting_signals: dict[str, str | float] = Field(default_factory=dict)
+
+
+class MarketCorrelationResponse(APIModel):
+    generated_at: datetime
+    engine_mode: str
+    cross_market_summary: str
+    insights: list[MarketCorrelationInsight] = Field(default_factory=list)
+    service_mode: str
+
+
+class MarketSnapshotSignal(APIModel):
+    market: str
+    price: float
+    change_percent: float
+    volatility: float
+    direction: str
+    primary_driver: str
+    confidence: float
+
+
+class MarketIntelligenceSnapshotResponse(APIModel):
+    generated_at: datetime
+    headline: str
+    summary: str
+    sentiment: str
+    outlook: str
+    cross_market_summary: str
+    market_narratives: dict[str, str] = Field(default_factory=dict)
+    key_signals: list[MarketSnapshotSignal] = Field(default_factory=list)
+    correlations: list[MarketCorrelationInsight] = Field(default_factory=list)
+    risk_assessment: MarketRiskAssessmentResponse | None = None
+    alert_feed: AlertFeedResponse | None = None
+    service_mode: str
 
 
 class IngestionTriggerRequest(APIModel):

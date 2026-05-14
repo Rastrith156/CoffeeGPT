@@ -25,7 +25,7 @@ prophet==1.1.5
 xgboost==2.0.3
 
 # Cache and queue
-redis==5.0.4
+redis[asyncio]==5.0.4
 celery==5.4.0
 
 # Scraping and HTTP
