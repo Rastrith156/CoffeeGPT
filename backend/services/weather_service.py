@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 import unicodedata
 
 import httpx
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from core.config import settings
+from core.errors import APIError
 from core.logger import logger
 from models.schemas import (
     RiskAssessmentResponse,
@@ -15,6 +18,8 @@ from models.schemas import (
     WeatherForecastPoint,
     WeatherForecastResponse,
 )
+from streaming.dead_letter_queue import DeadLetterQueue
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +123,35 @@ class WeatherService:
             "weather_code",
         )
     )
+
+    def __init__(self) -> None:
+        self._circuit_breaker_tripped = False
+        self._circuit_breaker_reset_at = 0.0
+        self._dlq = DeadLetterQueue()
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
+    )
+    async def _fetch_openmeteo_raw(self, profile: WeatherRegionProfile, forecast_days: int) -> dict:
+        async with httpx.AsyncClient(timeout=12) as client:
+            response = await client.get(
+                self.BASE_URL,
+                params={
+                    "latitude": profile.lat,
+                    "longitude": profile.lon,
+                    "current": self.CURRENT_FIELDS,
+                    "daily": self.DAILY_FIELDS,
+                    "forecast_days": forecast_days,
+                    "timezone": "auto",
+                    "wind_speed_unit": "ms",
+                    "temperature_unit": "celsius",
+                    "precipitation_unit": "mm",
+                },
+            )
+            response.raise_for_status()
+            return response.json()
 
     def supported_regions(self) -> list[str]:
         return [profile.name for profile in REGION_PROFILES]
@@ -228,26 +262,30 @@ class WeatherService:
 
     async def _live_snapshot(self, profile: WeatherRegionProfile, days: int) -> WeatherSnapshot | None:
         forecast_days = max(1, min(days, 14))
+
+        # Software Circuit Breaker Check
+        now = perf_counter()
+        if self._circuit_breaker_tripped:
+            if now > self._circuit_breaker_reset_at:
+                logger.info("WeatherService: Circuit breaker attempting reset.")
+                self._circuit_breaker_tripped = False
+            else:
+                logger.debug("WeatherService: Circuit breaker active, bypassing remote node for {}", profile.name)
+                return None
+
         try:
-            async with httpx.AsyncClient(timeout=12) as client:
-                response = await client.get(
-                    self.BASE_URL,
-                    params={
-                        "latitude": profile.lat,
-                        "longitude": profile.lon,
-                        "current": self.CURRENT_FIELDS,
-                        "daily": self.DAILY_FIELDS,
-                        "forecast_days": forecast_days,
-                        "timezone": "auto",
-                        "wind_speed_unit": "ms",
-                        "temperature_unit": "celsius",
-                        "precipitation_unit": "mm",
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
+            payload = await self._fetch_openmeteo_raw(profile, forecast_days)
         except Exception as exc:
-            logger.warning("Open-Meteo weather request failed for {}: {}", profile.name, exc)
+            logger.warning("Open-Meteo failed repeatedly for {}: {} | Tripping circuit breaker", profile.name, exc)
+            self._circuit_breaker_tripped = True
+            self._circuit_breaker_reset_at = perf_counter() + 60.0  # Cool down for 60 seconds
+
+            # Push structured failure to Dead Letter Queue
+            await self._dlq.push(
+                event_type="openmeteo_fetch_error",
+                payload={"region": profile.name, "lat": profile.lat, "lon": profile.lon},
+                error_message=str(exc),
+            )
             return None
 
         current_payload = payload.get("current") or {}

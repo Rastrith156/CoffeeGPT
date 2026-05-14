@@ -42,7 +42,7 @@ class FuturesStreamService:
     """
 
     BARCHART_QUOTE_URL  = "https://ondemand.websol.barchart.com/getQuote.json"
-    BARCHART_API_KEY    = "2d8b3b803594b13e02a7dc827f4a63f8"
+    BARCHART_API_KEY    = settings.barchart_api_key
     ARABICA_SYMBOLS     = "KCY00,KC*1"
     ROBUSTA_OVERVIEW_URL = "https://www.barchart.com/futures/quotes/RM*0/overview"
     USER_AGENT = "Mozilla/5.0 (compatible; CoffeeGPT-Stream/1.0)"

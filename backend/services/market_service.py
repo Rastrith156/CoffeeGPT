@@ -28,7 +28,7 @@ from models.schemas import (
 class MarketService:
     BARCHART_QUOTE_URL = "https://ondemand.websol.barchart.com/getQuote.json"
     BARCHART_HISTORY_URL = "https://ondemand.websol.barchart.com/getHistory.json"
-    BARCHART_PUBLIC_API_KEY = "2d8b3b803594b13e02a7dc827f4a63f8"
+    BARCHART_PUBLIC_API_KEY = settings.barchart_api_key
     BARCHART_USER_AGENT = "Mozilla/5.0 (compatible; CoffeeGPT/1.0; +https://localhost)"
     ARABICA_SYMBOLS = "KCY00,KC*1,KC*2,KC*3,KC*4"
     ROBUSTA_OVERVIEW_URL = "https://www.barchart.com/futures/quotes/RM*0/overview"

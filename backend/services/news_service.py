@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 
 import httpx
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from core.config import settings
+from core.errors import APIError
 from core.logger import logger
 from models.schemas import (
     NewsArticle,
@@ -14,6 +17,7 @@ from models.schemas import (
     PolicyUpdatesResponse,
     SentimentSummaryResponse,
 )
+from streaming.dead_letter_queue import DeadLetterQueue
 
 
 class NewsService:
@@ -26,26 +30,58 @@ class NewsService:
         NewsCategory.trade.value: "coffee trade export demand buyers",
     }
 
+    def __init__(self) -> None:
+        self._circuit_breaker_tripped = False
+        self._circuit_breaker_reset_at = 0.0
+        self._dlq = DeadLetterQueue()
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
+    )
+    async def _fetch_newsapi_raw(self, limit: int, category: str) -> dict:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                self.NEWSAPI_URL,
+                params={
+                    "q": self.CATEGORIES.get(category, "coffee"),
+                    "language": "en",
+                    "sortBy": "publishedAt",
+                    "pageSize": limit,
+                    "apiKey": settings.newsapi_key,
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def get_latest(self, limit: int = 20, category: str = NewsCategory.all.value) -> NewsFeedResponse:
         if not settings.newsapi_key:
             return self._demo_articles(limit, category)
 
+        # Software Circuit Breaker Check
+        now = perf_counter()
+        if self._circuit_breaker_tripped:
+            if now > self._circuit_breaker_reset_at:
+                logger.info("NewsService: Circuit breaker attempting reset.")
+                self._circuit_breaker_tripped = False
+            else:
+                logger.debug("NewsService: Circuit breaker active, bypassing remote node.")
+                return self._demo_articles(limit, category)
+
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(
-                    self.NEWSAPI_URL,
-                    params={
-                        "q": self.CATEGORIES.get(category, "coffee"),
-                        "language": "en",
-                        "sortBy": "publishedAt",
-                        "pageSize": limit,
-                        "apiKey": settings.newsapi_key,
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
+            payload = await self._fetch_newsapi_raw(limit, category)
         except Exception as exc:
-            logger.warning("News API failed, using curated feed: {}", exc)
+            logger.warning("News API failed repeatedly: {} | Tripping circuit breaker", exc)
+            self._circuit_breaker_tripped = True
+            self._circuit_breaker_reset_at = perf_counter() + 60.0  # Cool down for 60 seconds
+
+            # Push structured failure to Dead Letter Queue
+            await self._dlq.push(
+                event_type="newsapi_fetch_error",
+                payload={"category": category, "limit": limit},
+                error_message=str(exc),
+            )
             return self._demo_articles(limit, category)
 
         articles = [
@@ -65,6 +101,7 @@ class NewsService:
             articles=articles,
             service_mode="live_newsapi",
         )
+
 
     async def get_sentiment_summary(self) -> SentimentSummaryResponse:
         feed = await self.get_latest(limit=6, category=NewsCategory.all.value)

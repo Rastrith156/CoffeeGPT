@@ -98,15 +98,16 @@ class ApplicationContainer:
         await self.news_ingestor.seed_bootstrap_article()
 
         # ── Cold-layer background ingestion ──────────────────────────────────
-        if self.news_ingestion_task is None or self.news_ingestion_task.done():
-            self.news_ingestion_task = asyncio.create_task(self.news_ingestor.run_forever())
-        if self.weather_ingestion_task is None or self.weather_ingestion_task.done():
-            self.weather_ingestion_task = asyncio.create_task(self.weather_ingestor.run_forever())
-        if self.futures_ingestion_task is None or self.futures_ingestion_task.done():
-            self.futures_ingestion_task = asyncio.create_task(self.futures_ingestor.run_forever())
+        if settings.run_background_tasks:
+            if self.news_ingestion_task is None or self.news_ingestion_task.done():
+                self.news_ingestion_task = asyncio.create_task(self.news_ingestor.run_forever())
+            if self.weather_ingestion_task is None or self.weather_ingestion_task.done():
+                self.weather_ingestion_task = asyncio.create_task(self.weather_ingestor.run_forever())
+            if self.futures_ingestion_task is None or self.futures_ingestion_task.done():
+                self.futures_ingestion_task = asyncio.create_task(self.futures_ingestor.run_forever())
 
         # ── HOT LAYER streaming tasks ─────────────────────────────────────────
-        if _STREAMING_AVAILABLE:
+        if _STREAMING_AVAILABLE and settings.run_background_tasks:
             if self.futures_stream is not None and (
                 self.futures_stream_task is None or self.futures_stream_task.done()
             ):

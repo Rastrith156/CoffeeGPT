@@ -77,6 +77,18 @@ class Settings(BaseSettings):
     redis_price_ttl_seconds: int = Field(default=60, alias="REDIS_PRICE_TTL_SECONDS")
     redis_alert_ttl_seconds: int = Field(default=300, alias="REDIS_ALERT_TTL_SECONDS")
 
+    # ── Enterprise Security & Auth config ───────────────────────────────────
+    api_keys: list[str] = Field(
+        default_factory=lambda: ["coffeegpt_master_key_2026", "coffee_enterprise_key"],
+        alias="API_KEYS",
+    )
+    barchart_api_key: str = Field(default="", alias="BARCHART_API_KEY")
+    auth_enabled: bool = Field(default=True, alias="AUTH_ENABLED")
+    rate_limit_per_minute: int = Field(default=100, alias="RATE_LIMIT_PER_MINUTE")
+    trace_header_name: str = Field(default="X-Trace-ID", alias="TRACE_HEADER_NAME")
+    llm_provider: str = Field(default="lmstudio", alias="LLM_PROVIDER")
+    run_background_tasks: bool = Field(default=True, alias="RUN_BACKGROUND_TASKS")
+
     cors_origins: list[str] = Field(
         default_factory=lambda: [
             "http://localhost:3000",
