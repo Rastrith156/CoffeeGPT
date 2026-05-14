@@ -16,6 +16,15 @@ from core.runtime import build_container
 
 setup_logger()
 
+# ── Task 3: Production CORS safety guard ─────────────────────────────────────
+# This validation also runs inside Settings.model_validator, but we add an
+# explicit early-exit here for belt-and-suspenders protection.
+if settings.is_production and "*" in settings.cors_origins:
+    raise RuntimeError(
+        "FATAL: CORS_ORIGINS='*' is not allowed in production. "
+        "Set CORS_ORIGINS to an explicit list of allowed origins."
+    )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

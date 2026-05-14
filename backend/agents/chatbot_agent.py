@@ -200,8 +200,8 @@ class CoffeeChatbotAgent:
             try:
                 session = await self._session_memory.load(session_id)
                 return session.get("last_response_id")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to get previous response ID: {}", exc)
         return None
 
     async def _remember_response_id(self, session_id: str, response_id: str | None) -> None:
@@ -213,8 +213,8 @@ class CoffeeChatbotAgent:
                 session = await self._session_memory.load(session_id)
                 session["last_response_id"] = response_id
                 await self._session_memory.save(session_id, session)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to remember response ID: {}", exc)
 
     def _prepare_documents(self, question: str, documents: list) -> list:
         if self._is_recency_question(question):
@@ -601,8 +601,8 @@ class CoffeeChatbotAgent:
         if self._session_memory:
             try:
                 prior_context = await self._session_memory.build_context_summary(session_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to build context summary: {}", exc)
 
         user_input = self._build_user_input(question, context, prior_context=prior_context)
 
@@ -632,8 +632,8 @@ class CoffeeChatbotAgent:
                         user_message=question,
                         assistant_message=answer_text,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Failed to append exchange to session memory: {}", exc)
 
             return ChatResponse(
                 answer=answer_text,

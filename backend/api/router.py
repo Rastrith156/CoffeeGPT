@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from api import chat, forecast, health, ingestion, live, market, news, weather
+from api import auth, chat, forecast, health, ingestion, live, market, news, weather
 
 api_router = APIRouter()
+api_router.include_router(auth.router, tags=["Authentication"])        # Task 3
 api_router.include_router(health.router, tags=["Health"])
 api_router.include_router(chat.router, tags=["AI Chatbot"])
 api_router.include_router(market.router, tags=["Market Intelligence"])

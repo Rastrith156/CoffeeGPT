@@ -1,10 +1,14 @@
 """
-llm/providers/lmstudio.py
-=========================
-LM Studio / OpenAI-compatible local API provider.
+llm/providers/anthropic.py
+==========================
+Task 2 — Anthropic Claude provider via raw httpx (no SDK — no new deps).
 
-Updated for Task 2: implements stream_generate() using SSE token streaming
-against the OpenAI-spec /v1/chat/completions endpoint.
+Features:
+  - generate()       → blocking full completion
+  - generate_json()  → JSON-coerced completion
+  - stream_generate()→ token-by-token SSE from Anthropic Messages API
+  - Tenacity: 3 retries, exponential backoff (1s→8s), jitter
+  - Exception mapping: 429/529 → RateLimitError, 5xx → ProviderError
 """
 from __future__ import annotations
 
@@ -23,30 +27,46 @@ from tenacity import (
 
 from core.config import settings
 from core.logger import logger
-from llm.providers.base import ProviderError, RateLimitError
+from llm.providers.base import LLMProviderProtocol, ProviderError, RateLimitError
 
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_API_VERSION = "2023-06-01"
+
+# Exceptions that are worth retrying
 _RETRYABLE = (httpx.TimeoutException, httpx.NetworkError, ProviderError)
 
 
-class LMStudioProvider:
+def _map_status(status_code: int, text: str) -> ProviderError:
+    """Map Anthropic HTTP status codes to typed exceptions."""
+    if status_code in (429, 529):
+        return RateLimitError("anthropic", f"Rate limited ({status_code}): {text}", status_code)
+    return ProviderError("anthropic", f"HTTP {status_code}: {text}", status_code)
+
+
+class AnthropicProvider:
     """
-    Adapter for LM Studio or any OpenAI-compatible local API.
-    Implements LLMProviderProtocol (duck-typed).
+    Anthropic Claude provider implementing LLMProviderProtocol.
+    Uses raw httpx — no anthropic SDK needed.
     """
 
-    def __init__(self, client=None) -> None:
-        # Allow injecting existing LMStudioClient for backwards compat
-        self._legacy_client = client
-        self._base_url = settings.lmstudio_base_url.rstrip("/")
-        self._chat_url = f"{self._base_url}/v1/chat/completions"
-        self._model = settings.llm_model
-        self._timeout = settings.llm_timeout_seconds
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        self._api_key = api_key or settings.anthropic_api_key
+        self._model = model or settings.anthropic_model
+        self._timeout = timeout or settings.llm_timeout_seconds
+        if not self._api_key:
+            raise ProviderError("anthropic", "ANTHROPIC_API_KEY is not set")
 
     def _headers(self) -> dict[str, str]:
-        h = {"Content-Type": "application/json"}
-        if settings.lmstudio_api_token:
-            h["Authorization"] = f"Bearer {settings.lmstudio_api_token}"
-        return h
+        return {
+            "x-api-key": self._api_key,
+            "anthropic-version": ANTHROPIC_API_VERSION,
+            "content-type": "application/json",
+        }
 
     def _build_body(
         self,
@@ -56,31 +76,16 @@ class LMStudioProvider:
         max_tokens: int | None,
         stream: bool = False,
     ) -> dict[str, Any]:
-        messages: list[dict[str, str]] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-        return {
+        body: dict[str, Any] = {
             "model": self._model,
-            "messages": messages,
-            "temperature": temperature if temperature is not None else settings.llm_temperature,
             "max_tokens": max_tokens or settings.llm_max_output_tokens,
+            "temperature": temperature if temperature is not None else settings.llm_temperature,
+            "messages": [{"role": "user", "content": prompt}],
             "stream": stream,
         }
-
-    # ── Backward-compat: use legacy client when injected ─────────────────────
-
-    async def _legacy_generate(
-        self,
-        prompt: str,
-        system_prompt: str | None,
-    ) -> str:
-        result = await self._legacy_client.chat(
-            model=self._model,
-            user_input=prompt,
-            system_prompt=system_prompt,
-        )
-        return result.text
+        if system_prompt:
+            body["system"] = system_prompt
+        return body
 
     # ── generate ─────────────────────────────────────────────────────────────
 
@@ -99,15 +104,13 @@ class LMStudioProvider:
         max_tokens: Optional[int] = None,
         **kwargs: Any,
     ) -> str:
-        if self._legacy_client is not None:
-            return await self._legacy_generate(prompt, system_prompt)
-
         body = self._build_body(prompt, system_prompt, temperature, max_tokens, stream=False)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(self._chat_url, headers=self._headers(), json=body)
+            resp = await client.post(ANTHROPIC_API_URL, headers=self._headers(), json=body)
             if resp.status_code != 200:
-                raise ProviderError("lmstudio", f"HTTP {resp.status_code}: {resp.text[:300]}", resp.status_code)
-            return resp.json()["choices"][0]["message"]["content"]
+                raise _map_status(resp.status_code, resp.text[:300])
+            data = resp.json()
+            return data["content"][0]["text"]
 
     # ── generate_json ─────────────────────────────────────────────────────────
 
@@ -119,13 +122,13 @@ class LMStudioProvider:
         max_tokens: Optional[int] = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        enhanced = prompt if "json" in prompt.lower() else prompt + "\n\nResponse must be a valid JSON object."
+        enhanced = prompt if "json" in prompt.lower() else prompt + "\n\nRespond with a valid JSON object only."
         text = await self.generate(enhanced, system_prompt, temperature, max_tokens, **kwargs)
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE)
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"LMStudioProvider: JSON parse error: {exc}\nRaw: {text}") from exc
+            raise ValueError(f"AnthropicProvider: JSON parse error: {exc}\nRaw: {text}") from exc
 
     # ── stream_generate ───────────────────────────────────────────────────────
 
@@ -139,10 +142,10 @@ class LMStudioProvider:
     ) -> AsyncGenerator[str, None]:
         body = self._build_body(prompt, system_prompt, temperature, max_tokens, stream=True)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            async with client.stream("POST", self._chat_url, headers=self._headers(), json=body) as resp:
+            async with client.stream("POST", ANTHROPIC_API_URL, headers=self._headers(), json=body) as resp:
                 if resp.status_code != 200:
                     content = await resp.aread()
-                    raise ProviderError("lmstudio", f"HTTP {resp.status_code}: {content.decode()[:300]}", resp.status_code)
+                    raise _map_status(resp.status_code, content.decode()[:300])
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -150,10 +153,18 @@ class LMStudioProvider:
                     if not raw or raw == "[DONE]":
                         break
                     try:
-                        chunk = json.loads(raw)
+                        event = json.loads(raw)
                     except json.JSONDecodeError:
                         continue
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    token = delta.get("content")
-                    if token:
-                        yield token
+                    # Anthropic SSE event types
+                    etype = event.get("type", "")
+                    if etype == "content_block_delta":
+                        delta = event.get("delta", {})
+                        token = delta.get("text", "")
+                        if token:
+                            yield token
+                    elif etype == "message_stop":
+                        break
+                    elif etype == "error":
+                        err = event.get("error", {})
+                        raise ProviderError("anthropic", str(err))

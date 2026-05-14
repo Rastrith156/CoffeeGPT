@@ -98,6 +98,13 @@ class ApplicationContainer:
         await asyncio.to_thread(self.rag_pipeline.retriever.available)
         await self.news_ingestor.seed_bootstrap_article()
 
+        # ── Task 1: Intent Classifier Warm-up ────────────────────────────────
+        from agents.intent_classifier import IntentClassifier
+        redis_client = None
+        if self.redis_cache and hasattr(self.redis_cache, "_get_client"):
+            redis_client = await self.redis_cache._get_client()
+        await IntentClassifier.instance().warm_up(redis_client=redis_client)
+
         # ── Cold-layer background ingestion ──────────────────────────────────
         if settings.run_background_tasks:
             if self.news_ingestion_task is None or self.news_ingestion_task.done():

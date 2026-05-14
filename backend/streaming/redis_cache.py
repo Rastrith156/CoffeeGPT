@@ -123,7 +123,8 @@ class RedisMarketCache:
             return False
         try:
             return await client.ping()
-        except Exception:
+        except Exception as exc:
+            logger.warning("RedisMarketCache.is_healthy error: {}", exc)
             return False
 
     # ─── Domain helpers ───────────────────────────────────────────────────
@@ -209,6 +210,6 @@ class RedisMarketCache:
         if self._client is not None:
             try:
                 await self._client.aclose()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("RedisMarketCache.aclose error: {}", exc)
             self._client = None

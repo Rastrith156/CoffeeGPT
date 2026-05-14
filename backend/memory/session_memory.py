@@ -164,15 +164,16 @@ class SessionMemory:
         try:
             await client.delete(self._key(session_id))
             return True
-        except Exception:
+        except Exception as exc:
+            logger.warning("SessionMemory.delete error: {}", exc)
             return False
 
     async def aclose(self) -> None:
         if self._client is not None:
             try:
                 await self._client.aclose()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("SessionMemory.aclose error: {}", exc)
             self._client = None
 
     # ─── Factory ─────────────────────────────────────────────────────────────

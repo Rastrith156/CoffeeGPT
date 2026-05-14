@@ -6,30 +6,21 @@ STEP 1 (Autonomous Phase) — Orchestrator Agent
 The orchestrator decides which specialized agents to invoke,
 collects their outputs, and synthesises a final coherent response.
 
-User query routing:
-  - "hold stock?"  → futures + risk + alert + forecast + RAG
-  - "price now?"   → futures (hot layer first)
-  - "weather?"     → weather agent
-  - default        → all agents + RAG
+Intent routing now uses the embedding-based IntentClassifier (Task 1)
+instead of brittle keyword matching. Prototype vectors are pre-warmed
+in Redis at startup — classify() runs in < 2 ms per query.
 
-This is what makes the system feel ChatGPT/Claude-like.
+Fallback: if no intent scores >= 0.35 → routes to "general" (RAG-only).
 """
 from __future__ import annotations
 
 import asyncio
-import re
 from datetime import datetime, timezone
 from typing import Any
 
 from core.logger import logger
+from agents.intent_classifier import IntentClassifier
 from streaming.redis_cache import RedisMarketCache
-
-# Intent keywords for routing
-LIVE_PRICE_KEYWORDS   = ("price", "now", "current", "live", "today", "latest", "market now")
-RISK_KEYWORDS         = ("risk", "hold", "sell", "buy", "should i", "danger", "safe")
-ALERT_KEYWORDS        = ("alert", "spike", "warning", "anomaly", "unusual")
-FORECAST_KEYWORDS     = ("forecast", "outlook", "trend", "future", "next week", "projection", "prediction")
-WEATHER_KEYWORDS      = ("weather", "rainfall", "drought", "crop", "brazil", "vietnam", "harvest")
 
 
 class OrchestratorAgent:
@@ -39,6 +30,8 @@ class OrchestratorAgent:
 
     HOT LAYER (Redis) is consulted FIRST for real-time questions.
     COLD LAYER (RAG/Qdrant) is used for depth and historical context.
+
+    Intent routing is performed by IntentClassifier (embedding cosine-similarity).
     """
 
     def __init__(
@@ -49,7 +42,8 @@ class OrchestratorAgent:
         alert_agent=None,
         forecast_agent=None,
         chatbot_agent=None,
-        weather_agent=None,   # Fix #2
+        weather_agent=None,
+        intent_classifier: IntentClassifier | None = None,
     ) -> None:
         self._cache          = cache or RedisMarketCache()
         self._futures_agent  = futures_agent
@@ -57,7 +51,9 @@ class OrchestratorAgent:
         self._alert_agent    = alert_agent
         self._forecast_agent = forecast_agent
         self._chatbot_agent  = chatbot_agent
-        self._weather_agent  = weather_agent   # Fix #2
+        self._weather_agent  = weather_agent
+        # Use provided classifier or shared singleton (warm-up must have run)
+        self._classifier: IntentClassifier = intent_classifier or IntentClassifier.instance()
 
     # ─── Public interface ────────────────────────────────────────────────────
 
@@ -65,7 +61,7 @@ class OrchestratorAgent:
         """
         Main entry point — orchestrates agents and returns structured response.
         """
-        intent = self._classify_intent(question)
+        intent = await self._classify_intent(question)
         logger.info("OrchestratorAgent | intent={} question={!r:.60}", intent, question)
 
         # ── Live price fast-path ─────────────────────────────────────────────
@@ -84,9 +80,9 @@ class OrchestratorAgent:
             tasks["alert"] = asyncio.create_task(self._alert_agent.analyze(question))
         if self._forecast_agent and ("forecast" in intent or "risk" in intent):
             tasks["forecast"] = asyncio.create_task(self._forecast_agent.analyze(question))
-        # Fix #2: dispatch weather agent when weather intent detected
         if self._weather_agent and "weather" in intent:
             tasks["weather"] = asyncio.create_task(self._weather_agent.analyze(question))
+        # General intent — chatbot-only, already handled in RAG layer below
 
         agent_results: dict[str, Any] = {}
         if tasks:
@@ -118,24 +114,15 @@ class OrchestratorAgent:
             session_id=session_id,
         )
 
-    # ─── Intent classification ───────────────────────────────────────────────
+    # ─── Intent classification (Task 1) ──────────────────────────────────────
 
-    def _classify_intent(self, question: str) -> list[str]:
-        lowered = question.lower()
-        intent = []
-        if any(kw in lowered for kw in LIVE_PRICE_KEYWORDS):
-            intent.append("live_price")
-        if any(kw in lowered for kw in RISK_KEYWORDS):
-            intent.append("risk")
-        if any(kw in lowered for kw in ALERT_KEYWORDS):
-            intent.append("alert")
-        if any(kw in lowered for kw in FORECAST_KEYWORDS):
-            intent.append("forecast")
-        if any(kw in lowered for kw in WEATHER_KEYWORDS):
-            intent.append("weather")
-        if not intent:
-            intent.append("general")
-        return intent
+    async def _classify_intent(self, question: str) -> list[str]:
+        """
+        Embed query and compare against Redis-cached prototype vectors.
+        Runs inference in a thread-pool executor to avoid blocking event loop.
+        Falls back to ["general"] if similarity < 0.35 for all intents.
+        """
+        return await self._classifier.classify_async(question)
 
     # ─── Live price fast-path ────────────────────────────────────────────────
 
@@ -155,13 +142,9 @@ class OrchestratorAgent:
 
         parts = []
         if a_price > 0:
-            parts.append(
-                f"Arabica futures: {a_price:.2f} US cents/lb ({a_change:+.2f}%)"
-            )
+            parts.append(f"Arabica futures: {a_price:.2f} US cents/lb ({a_change:+.2f}%)")
         if r_price > 0:
-            parts.append(
-                f"Robusta: {r_price:.0f} USD/tonne ({r_change:+.2f}%)"
-            )
+            parts.append(f"Robusta: {r_price:.0f} USD/tonne ({r_change:+.2f}%)")
         if not parts:
             return None
 
@@ -195,37 +178,31 @@ class OrchestratorAgent:
     ) -> dict:
         intelligence_blocks: list[str] = []
 
-        # 1. Futures intelligence
         if "futures" in agent_results:
             fut = agent_results["futures"]
             if fut.get("summary"):
                 intelligence_blocks.append(f"📈 **Futures**: {fut['summary']}")
 
-        # 2. Risk assessment
         if "risk" in agent_results:
             risk = agent_results["risk"]
             if risk.get("summary"):
                 intelligence_blocks.append(f"🎯 **Risk**: {risk['summary']}")
 
-        # 3. Alert summary
         if "alert" in agent_results:
             alrt = agent_results["alert"]
             if alrt.get("summary"):
                 intelligence_blocks.append(f"🔔 **Alerts**: {alrt['summary']}")
 
-        # 4. Forecast
         if "forecast" in agent_results:
             fcast = agent_results["forecast"]
             if fcast.get("summary"):
                 intelligence_blocks.append(f"🔭 **Outlook**: {fcast['summary']}")
 
-        # 5. Fix #2: Weather intelligence block
         if "weather" in agent_results:
             w = agent_results["weather"]
             if w.get("summary"):
                 intelligence_blocks.append(f"🌦 **Weather**: {w['summary']}")
 
-        # 5. RAG / LLM answer
         rag_text  = ""
         rag_sources = []
         rag_model = ""
@@ -234,10 +211,10 @@ class OrchestratorAgent:
                 rag_text    = rag_response.answer if hasattr(rag_response, "answer") else str(rag_response)
                 rag_sources = rag_response.sources if hasattr(rag_response, "sources") else []
                 rag_model   = rag_response.model   if hasattr(rag_response, "model") else ""
-            except Exception:
+            except Exception as exc:
+                logger.warning("Failed to extract rag_response attributes: {}", exc)
                 rag_text = ""
 
-        # Compose final answer
         if intelligence_blocks and rag_text:
             answer = (
                 "\n".join(intelligence_blocks)
