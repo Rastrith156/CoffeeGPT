@@ -11,6 +11,7 @@ Tests:
   - Assert retrieval returns at most top_k results
 """
 from __future__ import annotations
+from typing import Any
 
 
 import numpy as np
@@ -27,8 +28,6 @@ def _make_vec(seed: int, dim: int = 384) -> list[float]:
     v = rng.random(dim).astype(np.float32)
     return (v / np.linalg.norm(v)).tolist()
 
-
-from typing import Any
 
 DOCS: list[dict[str, Any]] = [
     {

@@ -4,6 +4,7 @@ import asyncio
 import html
 import re
 import xml.etree.ElementTree as ET
+from abc import abstractmethod
 from datetime import datetime
 from urllib.parse import quote
 
