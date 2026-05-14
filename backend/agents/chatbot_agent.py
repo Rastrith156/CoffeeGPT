@@ -573,7 +573,10 @@ class CoffeeChatbotAgent:
 
         documents = []
         if use_rag:
-            retrieval_limit = max(settings.rag_top_k * 2, settings.rag_top_k + 3)
+            retrieval_limit = max(
+                settings.rag_top_k * settings.rag_retrieval_multiplier,
+                settings.rag_top_k + 3,
+            )
             documents = await asyncio.to_thread(self.retriever.search, question, retrieval_limit)
             documents = self._prepare_documents(question, documents)
             if not documents and not live_prefix:

@@ -176,8 +176,8 @@ def build_container() -> ApplicationContainer:
 
     # Fix #1: production safety guard — crash early with a clear message
     if settings.is_production:
-        assert settings.secret_key != "change_me", (
-            "SECRET_KEY must be set to a secure value in production. "
+        assert settings.secret_key not in ("change_me", "change_me_to_a_secure_random_string"), (
+            "SECRET_KEY must be changed from the default value in production. "
             "Set SECRET_KEY=<random-string> in your .env file."
         )
         default_keys = {"coffeegpt_master_key_2026", "coffee_enterprise_key"}
