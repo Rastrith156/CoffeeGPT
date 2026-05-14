@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 from datetime import datetime
+from typing import Any
 
 try:
     from loguru import logger
@@ -56,7 +57,7 @@ except ModuleNotFoundError:
                 self._logger.removeHandler(handler)
                 handler.close()
 
-    logger = _FallbackLogger()
+    logger: Any = _FallbackLogger()  # type: ignore[assignment]
 
 from core.config import settings
 

@@ -406,8 +406,8 @@ class CorrelationEngine:
 
         for driver in drivers:
             weight = self.DRIVER_WEIGHTS.get(driver.driver_type, 0.15)
-            direction = 1 if driver.impact == "bullish" else -1 if driver.impact == "bearish" else 0
-            score += direction * weight * driver.confidence
+            dir_val = 1 if driver.impact == "bullish" else -1 if driver.impact == "bearish" else 0
+            score += dir_val * weight * driver.confidence
             confidence += weight * driver.confidence * 0.55
 
         if snapshot.change_percent > 0.35:
@@ -416,13 +416,13 @@ class CorrelationEngine:
             score -= 0.08
 
         if score >= 0.12:
-            direction = "bullish"
+            final_direction = "bullish"
         elif score <= -0.12:
-            direction = "bearish"
+            final_direction = "bearish"
         else:
-            direction = "mixed"
+            final_direction = "mixed"
 
-        return direction, round(min(max(confidence, 0.3), 0.95), 2)
+        return final_direction, round(min(max(confidence, 0.3), 0.95), 2)
 
     def _build_causal_summary(
         self,

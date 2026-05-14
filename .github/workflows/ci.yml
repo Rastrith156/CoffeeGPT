@@ -94,6 +94,7 @@ jobs:
 
       - name: Run pytest with coverage
         env:
+          PYTHONPATH: .
           ENVIRONMENT: development
           AUTH_ENABLED: "false"
           REDIS_URL: redis://localhost:6379/0

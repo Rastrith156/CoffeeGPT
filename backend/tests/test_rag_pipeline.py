@@ -28,7 +28,9 @@ def _make_vec(seed: int, dim: int = 384) -> list[float]:
     return (v / np.linalg.norm(v)).tolist()
 
 
-DOCS = [
+from typing import Any
+
+DOCS: list[dict[str, Any]] = [
     {
         "id": 1,
         "payload": {

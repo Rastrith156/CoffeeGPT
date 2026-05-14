@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 
 from core.config import settings
 from core.logger import logger
@@ -133,9 +134,9 @@ class IngestionPipeline:
         descriptors = [connector.descriptor() for connector in self.connectors.values()]
         return SourceCatalogResponse(sources=descriptors, total=len(descriptors))
 
-    def _write_payload(self, directory, prefix: str, payload) -> str:
+    def _write_payload(self, directory, prefix: str, payload) -> Path:
         settings.ensure_directories()
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        path = directory / f"{prefix}_{timestamp}.json"
+        path = Path(directory) / f"{prefix}_{timestamp}.json"
         path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
         return path

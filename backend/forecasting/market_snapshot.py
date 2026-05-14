@@ -206,7 +206,8 @@ class MarketSnapshotGenerator:
         )
 
     async def _load_weather_context(self, markets: set[str]) -> dict[str, list]:
-        tasks: list[tuple[str, str, object]] = []
+        from typing import Any, Awaitable
+        tasks: list[tuple[str, str, Awaitable[Any]]] = []
         for market in sorted(markets):
             for region in self.correlation_engine.MARKET_REGIONS.get(market.lower(), ()):
                 tasks.append((market.lower(), region, self.weather_service.get_snapshot(region=region, days=3)))
@@ -248,6 +249,10 @@ class MarketSnapshotGenerator:
             if not market:
                 continue
             timestamp = metadata.get("published_at") or raw.get("timestamp") or datetime.now(timezone.utc).isoformat()
+            if isinstance(timestamp, str):
+                parsed_timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            else:
+                parsed_timestamp = timestamp if isinstance(timestamp, datetime) else datetime.now(timezone.utc)
             snapshots.append(
                 HistoricalFuturesSnapshot(
                     market=market,
@@ -258,7 +263,7 @@ class MarketSnapshotGenerator:
                     volatility=self._coerce_float(
                         metadata.get("volatility_pct") or raw.get("volatility_pct")
                     ),
-                    timestamp=timestamp,
+                    timestamp=parsed_timestamp,
                     snapshot_date=str(
                         metadata.get("snapshot_date")
                         or raw.get("snapshot_date")

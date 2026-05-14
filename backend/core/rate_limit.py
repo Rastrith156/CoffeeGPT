@@ -57,7 +57,7 @@ async def _get_redis_client() -> aioredis.Redis | None:
 
 # ── Per-endpoint limit map ────────────────────────────────────────────────────
 
-_ENDPOINT_LIMITS: dict[str, int] = {
+_ENDPOINT_LIMITS: dict[str, int | None] = {
     "chat":      None,   # resolved at runtime from settings
     "market":    None,
     "ingestion": None,

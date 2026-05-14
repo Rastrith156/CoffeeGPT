@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
@@ -111,7 +112,7 @@ class FuturesIngestor:
                     volatility=self._coerce_float(
                         metadata.get("volatility_pct") or raw.get("volatility_pct")
                     ),
-                    timestamp=published_at,
+                    timestamp=datetime.fromisoformat(str(published_at).replace("Z", "+00:00")) if isinstance(published_at, str) else (published_at if isinstance(published_at, datetime) else datetime.now(timezone.utc)),
                     snapshot_date=snapshot_date,
                     currency=str(metadata.get("currency") or raw.get("currency") or "") or None,
                     symbol=str(metadata.get("symbol") or raw.get("symbol") or "") or None,
@@ -253,7 +254,7 @@ class FuturesIngestor:
                     "market_files_updated": [],
                 }
             records_to_index = [*records, *derived_records]
-            raw_path = self.ingestion_pipeline._write_payload(settings.raw_data_dir, "futures", records)
+            raw_path = Path(self.ingestion_pipeline._write_payload(settings.raw_data_dir, "futures", records))
             indexed_count = await self.index_futures_records(records_to_index)
             processed_payload = {
                 "source": "futures",
@@ -265,11 +266,11 @@ class FuturesIngestor:
                 "alert_memory": alert_memory,
                 "market_snapshot": predictive_snapshot.model_dump(mode="json"),
             }
-            processed_path = self.ingestion_pipeline._write_payload(
+            processed_path = Path(self.ingestion_pipeline._write_payload(
                 settings.processed_data_dir,
                 "futures_summary",
                 processed_payload,
-            )
+            ))
             record = IngestionJobRecord(
                 source="futures",
                 status="completed",
@@ -280,7 +281,7 @@ class FuturesIngestor:
                 detail=(
                     f"raw={raw_path.name}; processed={processed_path.name}; "
                     f"history_persisted={historical_memory['snapshots_persisted']}; "
-                    f"alerts_persisted={alert_memory['alerts_persisted']}; "
+                    f"alerts_persisted={int(alert_memory['alerts_persisted'])}; "
                     f"derived_records={len(derived_records)}"
                 ),
                 dispatch_mode=dispatch_mode,
@@ -330,7 +331,7 @@ async def main() -> None:
         ingestor.extract_historical_snapshots(records),
     )
     predictive_snapshot, derived_records = await ingestor.build_predictive_snapshot(records)
-    alert_summary = {"alerts_persisted": 0}
+    alert_summary: dict[str, Any] = {"alerts_persisted": 0}
     if predictive_snapshot.alert_feed is not None:
         alert_summary = await asyncio.to_thread(
             ingestor.snapshot_generator.alert_engine.persist_alert_memory,

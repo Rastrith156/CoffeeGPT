@@ -74,7 +74,7 @@ class WeatherIngestor:
         started_at = datetime.now(timezone.utc)
         try:
             records = await self.fetch_weather_records()
-            raw_path = self.ingestion_pipeline._write_payload(settings.raw_data_dir, "weather", records)
+            raw_path = Path(self.ingestion_pipeline._write_payload(settings.raw_data_dir, "weather", records))
             indexed_count = await self.index_weather_records(records)
             processed_payload = {
                 "source": "weather",
@@ -84,11 +84,11 @@ class WeatherIngestor:
                 "forecast_days": settings.weather_forecast_days,
                 "raw_snapshot": raw_path.name,
             }
-            processed_path = self.ingestion_pipeline._write_payload(
+            processed_path = Path(self.ingestion_pipeline._write_payload(
                 settings.processed_data_dir,
                 "weather_summary",
                 processed_payload,
-            )
+            ))
             record = IngestionJobRecord(
                 source="weather",
                 status="completed",

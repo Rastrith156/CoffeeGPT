@@ -108,7 +108,7 @@ def seed_qdrant(mock_qdrant: QdrantClient):
         vec /= np.linalg.norm(vec)  # L2 normalise
         points.append(
             PointStruct(
-                id=doc["id"],
+                id=int(doc["id"]),
                 vector=vec.tolist(),
                 payload={k: v for k, v in doc.items() if k != "id"},
             )

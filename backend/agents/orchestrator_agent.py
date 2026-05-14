@@ -204,7 +204,7 @@ class OrchestratorAgent:
                 intelligence_blocks.append(f"🌦 **Weather**: {w['summary']}")
 
         rag_text  = ""
-        rag_sources = []
+        rag_sources: list[Any] = []
         rag_model = ""
         if rag_response is not None:
             try:

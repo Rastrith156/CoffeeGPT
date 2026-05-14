@@ -310,7 +310,7 @@ class NewsIngestor:
         for field_name in ("published_parsed", "updated_parsed"):
             parsed_value = getattr(entry, field_name, None)
             if parsed_value:
-                return datetime(*parsed_value[:6], tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+                return datetime(parsed_value[0], parsed_value[1], parsed_value[2], parsed_value[3], parsed_value[4], parsed_value[5], tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
         for field_name in ("published", "updated"):
             text_value = self._clean_text(getattr(entry, field_name, ""))

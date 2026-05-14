@@ -38,6 +38,10 @@ class BaseConnector:
             "metadata": metadata,
         }
 
+    @abstractmethod
+    async def fetch(self) -> list[dict]:  # pragma: no cover
+        raise NotImplementedError(f"{type(self).__name__} must implement fetch()")
+
 
 class PriceConnector(BaseConnector):
     name = "prices"

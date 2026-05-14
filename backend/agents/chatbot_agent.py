@@ -79,8 +79,8 @@ class CoffeeChatbotAgent:
         else:
             self._cache = None
 
-    def _build_context(self, question: str, documents: list) -> tuple[str, list[SourceCitation], list[dict[str, object]]]:
-        grouped_sources: dict[tuple[str, str | None, str | None, str | None], dict[str, object]] = {}
+    def _build_context(self, question: str, documents: list) -> tuple[str, list[SourceCitation], list[dict[str, Any]]]:
+        grouped_sources: dict[tuple[str, str | None, str | None, str | None], dict[str, Any]] = {}
 
         for document in documents:
             source = str(document.metadata.get("source", "unknown")).strip()
@@ -297,7 +297,7 @@ class CoffeeChatbotAgent:
             return True
         return False
 
-    def _build_grounded_fallback_answer(self, question: str, source_groups: list[dict[str, object]]) -> str:
+    def _build_grounded_fallback_answer(self, question: str, source_groups: list[dict[str, Any]]) -> str:
         if not source_groups:
             return self._build_no_context_answer(question)
 
@@ -457,11 +457,11 @@ class CoffeeChatbotAgent:
 
     def _find_source_group(
         self,
-        source_groups: list[dict[str, object]],
+        source_groups: list[dict[str, Any]],
         *,
         source: str | None = None,
         record_type_contains: str | None = None,
-    ) -> dict[str, object] | None:
+    ) -> dict[str, Any] | None:
         for group in source_groups:
             source_name = str(group.get("source") or "").strip().lower()
             record_type = str(group.get("record_type") or "").strip().lower()
@@ -471,14 +471,14 @@ class CoffeeChatbotAgent:
                 return group
         return None
 
-    def _find_news_group(self, source_groups: list[dict[str, object]]) -> dict[str, object] | None:
+    def _find_news_group(self, source_groups: list[dict[str, Any]]) -> dict[str, Any] | None:
         for group in source_groups:
             source_name = str(group.get("source") or "").strip().lower()
             if source_name.startswith("news") or source_name == "bootstrap_news":
                 return group
         return None
 
-    def _find_best_futures_group(self, source_groups: list[dict[str, object]]) -> dict[str, object] | None:
+    def _find_best_futures_group(self, source_groups: list[dict[str, Any]]) -> dict[str, Any] | None:
         futures_groups = [
             group for group in source_groups if str(group.get("source") or "").strip().lower() == "futures"
         ]
@@ -492,8 +492,8 @@ class CoffeeChatbotAgent:
     def _find_best_weather_group(
         self,
         question: str,
-        source_groups: list[dict[str, object]],
-    ) -> dict[str, object] | None:
+        source_groups: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         weather_groups = [
             group for group in source_groups if str(group.get("source") or "").strip().lower() == "weather"
         ]

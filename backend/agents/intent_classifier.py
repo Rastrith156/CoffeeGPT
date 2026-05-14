@@ -178,6 +178,8 @@ class IntentClassifier:
 
     async def _save_to_redis(self, redis_client: Any) -> None:
         """Persist prototype vectors to Redis as JSON (base64-free, small enough)."""
+        if self._proto_matrix is None:
+            return
         try:
             for label, vec in zip(self._intent_labels, self._proto_matrix):
                 key = f"{PROTO_KEY_PREFIX}{label}"

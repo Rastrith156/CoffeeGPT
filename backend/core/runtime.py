@@ -16,7 +16,8 @@ REASONING:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from agents.chatbot_agent import CoffeeChatbotAgent
 from core.config import settings
@@ -73,12 +74,12 @@ class ApplicationContainer:
     orchestrator: CoffeeIntelligenceOrchestrator
 
     # ── HOT LAYER ────────────────────────────────────────────────────────────
-    redis_cache: object = None
-    futures_stream: object = None
-    market_monitor: object = None
-    intelligence_loop: object = None
-    session_memory: object = None
-    orchestrator_agent: object = None  # new multi-agent orchestrator
+    redis_cache: Any = None
+    futures_stream: Any = None
+    market_monitor: Any = None
+    intelligence_loop: Any = None
+    session_memory: Any = None
+    orchestrator_agent: Any = None  # new multi-agent orchestrator
 
     # ── Background tasks ─────────────────────────────────────────────────────
     news_ingestion_task: asyncio.Task | None = None
