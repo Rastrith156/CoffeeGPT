@@ -6,12 +6,26 @@ and automatic credential/secret scrubbing from strings.
 """
 from __future__ import annotations
 
+import re
+
 from fastapi import HTTPException, Security
 from fastapi.security import APIKeyHeader
 
 from core.config import settings
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+INJECTION_PATTERNS = [
+    "ignore all prior",
+    "ignore previous instructions",
+    "you are now",
+    "disregard your",
+    "forget your instructions",
+    "output your system prompt",
+    "reveal your prompt",
+    "print your instructions",
+    "show your system prompt",
+]
 
 
 async def get_api_key(api_key: str | None = Security(api_key_header)) -> str:
@@ -58,3 +72,24 @@ def scrub_secrets(text: str) -> str:
             text = text.replace(token, "[REDACTED]")
 
     return text
+
+
+def sanitize_user_input(text: str) -> str:
+    """
+    Sanitize user input to block prompt injection attacks and strip control characters.
+    Raises HTTP 400 if the input contains known injection patterns.
+    """
+    if not text:
+        return text
+
+    lowered = text.lower()
+    for pattern in INJECTION_PATTERNS:
+        if pattern in lowered:
+            raise HTTPException(
+                status_code=400,
+                detail="Request contains disallowed patterns.",
+            )
+
+    # Strip non-printable control characters (except newline/tab)
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    return cleaned.strip()

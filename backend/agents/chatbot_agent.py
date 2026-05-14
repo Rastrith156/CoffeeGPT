@@ -65,11 +65,12 @@ class CoffeeChatbotAgent:
         retriever: CoffeeRetriever | None = None,
         lmstudio_client: LMStudioClient | None = None,
         redis_cache=None,
+        session_memory=None,   # Fix #4: Redis-backed session memory
     ) -> None:
         self.retriever = retriever or CoffeeRetriever()
         self.lmstudio_client = lmstudio_client or LMStudioClient()
-        self._session_response_ids: dict[str, str] = {}
-        self._session_lock = asyncio.Lock()
+        # Fix #4: use Redis-backed session memory instead of in-process dict
+        self._session_memory = session_memory
         # Hot-layer cache (Redis) — optional, fails gracefully
         if redis_cache is not None:
             self._cache = redis_cache
@@ -194,14 +195,26 @@ class CoffeeChatbotAgent:
         return "\n\n".join(context_blocks), citations, ordered_sources
 
     async def _get_previous_response_id(self, session_id: str) -> str | None:
-        async with self._session_lock:
-            return self._session_response_ids.get(session_id)
+        # Fix #4: read from Redis-backed session memory
+        if self._session_memory:
+            try:
+                session = await self._session_memory.load(session_id)
+                return session.get("last_response_id")
+            except Exception:
+                pass
+        return None
 
     async def _remember_response_id(self, session_id: str, response_id: str | None) -> None:
         if not response_id:
             return
-        async with self._session_lock:
-            self._session_response_ids[session_id] = response_id
+        # Fix #4: persist to Redis-backed session memory
+        if self._session_memory:
+            try:
+                session = await self._session_memory.load(session_id)
+                session["last_response_id"] = response_id
+                await self._session_memory.save(session_id, session)
+            except Exception:
+                pass
 
     def _prepare_documents(self, question: str, documents: list) -> list:
         if self._is_recency_question(question):
@@ -222,7 +235,7 @@ class CoffeeChatbotAgent:
                 ),
                 reverse=True,
             )
-        return prepared[: max(settings.rag_top_k * 2, settings.rag_top_k)]
+        return prepared[: max(settings.rag_top_k * settings.rag_retrieval_multiplier, settings.rag_top_k + 3)]
 
     def _is_recency_question(self, question: str) -> bool:
         lowered = question.lower()
@@ -246,9 +259,9 @@ class CoffeeChatbotAgent:
         except (TypeError, ValueError, IndexError, OverflowError):
             return 0.0
 
-    def _build_user_input(self, question: str, context: str) -> str:
+    def _build_user_input(self, question: str, context: str, prior_context: str = "") -> str:
         current_date = datetime.now(timezone.utc).date().isoformat()
-        return (
+        base_input = (
             "Use only the retrieved context below.\n"
             "Rules:\n"
             "- Answer directly in 4-6 sentences.\n"
@@ -265,6 +278,10 @@ class CoffeeChatbotAgent:
             f"Retrieved context:\n{context}\n\n"
             f"Question:\n{question}"
         )
+        # Fix #23: prepend prior conversation context for multi-turn coherence
+        if prior_context:
+            return prior_context + "\n\n" + base_input
+        return base_input
 
     def _is_low_quality_answer(self, answer: str, citation_count: int) -> bool:
         lowered = answer.lower().strip()
@@ -575,7 +592,16 @@ class CoffeeChatbotAgent:
             context = live_prefix + ("\n\n" + context if context else "")
         previous_response_id = await self._get_previous_response_id(session_id)
         retrieval_mode_tag = "rag+live" if live_prefix and documents else "live_redis" if live_prefix else "rag"
-        user_input = self._build_user_input(question, context)
+
+        # Fix #23: prepend prior conversation context from session memory
+        prior_context = ""
+        if self._session_memory:
+            try:
+                prior_context = await self._session_memory.build_context_summary(session_id)
+            except Exception:
+                pass
+
+        user_input = self._build_user_input(question, context, prior_context=prior_context)
 
         try:
             lmstudio_response = await self.lmstudio_client.chat(
@@ -594,6 +620,17 @@ class CoffeeChatbotAgent:
                 retrieval_mode = "retrieval_fallback"
             else:
                 await self._remember_response_id(session_id, lmstudio_response.response_id)
+
+            # Fix #24: persist exchange to session memory for multi-turn context
+            if self._session_memory:
+                try:
+                    await self._session_memory.append_exchange(
+                        session_id=session_id,
+                        user_message=question,
+                        assistant_message=answer_text,
+                    )
+                except Exception:
+                    pass
 
             return ChatResponse(
                 answer=answer_text,

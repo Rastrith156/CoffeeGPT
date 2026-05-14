@@ -47,6 +47,7 @@ try:
     from agents.alert_agent import AlertAgent
     from agents.forecast_agent import ForecastAgent
     from agents.orchestrator_agent import OrchestratorAgent
+    from agents.weather_agent import WeatherAgent
     from memory.session_memory import SessionMemory
     _STREAMING_AVAILABLE = True
 except ImportError as _imp_err:
@@ -173,6 +174,21 @@ class ApplicationContainer:
 def build_container() -> ApplicationContainer:
     settings.ensure_directories()
 
+    # Fix #1: production safety guard — crash early with a clear message
+    if settings.is_production:
+        assert settings.secret_key != "change_me", (
+            "SECRET_KEY must be set to a secure value in production. "
+            "Set SECRET_KEY=<random-string> in your .env file."
+        )
+        default_keys = {"coffeegpt_master_key_2026", "coffee_enterprise_key"}
+        assert not any(k in default_keys for k in settings.api_keys), (
+            "Default API keys detected in production. "
+            "Replace API_KEYS with real secret keys in your .env file."
+        )
+        assert len(settings.api_keys) > 0, (
+            "API_KEYS must not be empty in production. Set AUTH_ENABLED=true and provide real keys."
+        )
+
     # ── Cold layer ────────────────────────────────────────────────────────────
     market_service   = MarketService()
     weather_service  = WeatherService()
@@ -198,6 +214,7 @@ def build_container() -> ApplicationContainer:
     risk_agent_obj   = None
     alert_agent_obj  = None
     forecast_agent_obj = None
+    weather_agent_obj  = None
     orchestrator_agent_obj = None
 
     if _STREAMING_AVAILABLE:
@@ -215,14 +232,18 @@ def build_container() -> ApplicationContainer:
         risk_agent_obj     = RiskAgent(cache=redis_cache)
         alert_agent_obj    = AlertAgent(cache=redis_cache)
         forecast_agent_obj = ForecastAgent(cache=redis_cache, forecast_service=forecast_service)
+        weather_agent_obj  = WeatherAgent(cache=redis_cache, weather_service=weather_service)
 
+    # Fix #9: pass session_memory to chatbot_agent so Redis-backed history is used
     # ── Chatbot (gets redis_cache for live prefix) ────────────────────────────
     chatbot_agent = CoffeeChatbotAgent(
         retriever=rag_pipeline.retriever,
         lmstudio_client=lmstudio_client,
         redis_cache=redis_cache,
+        session_memory=session_memory,
     )
 
+    # Fix #10: wire WeatherAgent and pass all agents including weather to OrchestratorAgent
     # ── Multi-agent orchestrator ──────────────────────────────────────────────
     if _STREAMING_AVAILABLE:
         orchestrator_agent_obj = OrchestratorAgent(
@@ -232,6 +253,7 @@ def build_container() -> ApplicationContainer:
             alert_agent=alert_agent_obj,
             forecast_agent=forecast_agent_obj,
             chatbot_agent=chatbot_agent,
+            weather_agent=weather_agent_obj,
         )
 
     ingestion_pipeline = IngestionPipeline(
@@ -252,6 +274,7 @@ def build_container() -> ApplicationContainer:
         forecast_service=forecast_service,
         ingestion_pipeline=ingestion_pipeline,
         health_service=health_service,
+        orchestrator_agent=orchestrator_agent_obj,   # Fix #10
     )
 
     return ApplicationContainer(

@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     app_version: str = Field(default="1.0.0", alias="APP_VERSION")
     api_prefix: str = Field(default="/api/v1", alias="API_PREFIX")
     environment: str = Field(default="development", alias="ENVIRONMENT")
-    debug: bool = Field(default=True, alias="APP_DEBUG")
+    debug: bool = Field(default=False, alias="APP_DEBUG")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     secret_key: str = Field(default="change_me", alias="SECRET_KEY")
 
@@ -79,7 +79,7 @@ class Settings(BaseSettings):
 
     # ── Enterprise Security & Auth config ───────────────────────────────────
     api_keys: list[str] = Field(
-        default_factory=lambda: ["coffeegpt_master_key_2026", "coffee_enterprise_key"],
+        default_factory=list,
         alias="API_KEYS",
     )
     barchart_api_key: str = Field(default="", alias="BARCHART_API_KEY")
@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     trace_header_name: str = Field(default="X-Trace-ID", alias="TRACE_HEADER_NAME")
     llm_provider: str = Field(default="lmstudio", alias="LLM_PROVIDER")
     run_background_tasks: bool = Field(default=True, alias="RUN_BACKGROUND_TASKS")
+    rag_retrieval_multiplier: int = Field(default=2, alias="RAG_RETRIEVAL_MULTIPLIER")
 
     cors_origins: list[str] = Field(
         default_factory=lambda: [
@@ -115,6 +116,10 @@ class Settings(BaseSettings):
         ],
         alias="WEATHER_REGIONS",
     )
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.lower() == "production"
 
     @property
     def backend_root(self) -> Path:

@@ -29,8 +29,8 @@ from core.logger import logger
 from streaming.redis_cache import RedisMarketCache
 
 # ─── Poll intervals ─────────────────────────────────────────────────────────
-STREAM_INTERVAL_SECONDS: int = 30   # poll every 30 s
-SPIKE_THRESHOLD_PCT: float  = 2.0   # % move triggers a spike alert
+# Fix #11: removed module-level constant — use settings.stream_interval_seconds
+SPIKE_THRESHOLD_PCT: float = 2.0   # % move triggers a spike alert
 
 
 class FuturesStreamService:
@@ -59,7 +59,7 @@ class FuturesStreamService:
     async def start(self) -> None:
         """Run forever — designed to be launched as an asyncio.Task."""
         self._running = True
-        logger.info("FuturesStreamService started (interval={}s)", STREAM_INTERVAL_SECONDS)
+        logger.info("FuturesStreamService started (interval={}s)", settings.stream_interval_seconds)
         while self._running:
             try:
                 await self._tick()
@@ -67,7 +67,7 @@ class FuturesStreamService:
                 break
             except Exception as exc:
                 logger.warning("FuturesStreamService tick error: {}", exc)
-            await asyncio.sleep(STREAM_INTERVAL_SECONDS)
+            await asyncio.sleep(settings.stream_interval_seconds)
 
     async def stop(self) -> None:
         self._running = False
@@ -157,6 +157,11 @@ class FuturesStreamService:
             }
         except Exception as exc:
             logger.warning("Arabica live fetch failed: {} — using synthetic", exc)
+            # Fix #6: never use synthetic prices in production
+            if settings.is_production:
+                logger.warning("No live arabica feed available in production, skipping tick")
+                return None
+            logger.warning("Using synthetic arabica price (dev/test only)")
             return self._synthetic_arabica()
 
     async def _fetch_robusta(self) -> dict | None:
@@ -181,6 +186,11 @@ class FuturesStreamService:
             }
         except Exception as exc:
             logger.warning("Robusta live fetch failed: {} — using synthetic", exc)
+            # Fix #6: never use synthetic prices in production
+            if settings.is_production:
+                logger.warning("No live robusta feed available in production, skipping tick")
+                return None
+            logger.warning("Using synthetic robusta price (dev/test only)")
             return self._synthetic_robusta()
 
     # ─── Spike detection ─────────────────────────────────────────────────────

@@ -49,6 +49,7 @@ class OrchestratorAgent:
         alert_agent=None,
         forecast_agent=None,
         chatbot_agent=None,
+        weather_agent=None,   # Fix #2
     ) -> None:
         self._cache          = cache or RedisMarketCache()
         self._futures_agent  = futures_agent
@@ -56,6 +57,7 @@ class OrchestratorAgent:
         self._alert_agent    = alert_agent
         self._forecast_agent = forecast_agent
         self._chatbot_agent  = chatbot_agent
+        self._weather_agent  = weather_agent   # Fix #2
 
     # ─── Public interface ────────────────────────────────────────────────────
 
@@ -82,6 +84,9 @@ class OrchestratorAgent:
             tasks["alert"] = asyncio.create_task(self._alert_agent.analyze(question))
         if self._forecast_agent and ("forecast" in intent or "risk" in intent):
             tasks["forecast"] = asyncio.create_task(self._forecast_agent.analyze(question))
+        # Fix #2: dispatch weather agent when weather intent detected
+        if self._weather_agent and "weather" in intent:
+            tasks["weather"] = asyncio.create_task(self._weather_agent.analyze(question))
 
         agent_results: dict[str, Any] = {}
         if tasks:
@@ -213,6 +218,12 @@ class OrchestratorAgent:
             fcast = agent_results["forecast"]
             if fcast.get("summary"):
                 intelligence_blocks.append(f"🔭 **Outlook**: {fcast['summary']}")
+
+        # 5. Fix #2: Weather intelligence block
+        if "weather" in agent_results:
+            w = agent_results["weather"]
+            if w.get("summary"):
+                intelligence_blocks.append(f"🌦 **Weather**: {w['summary']}")
 
         # 5. RAG / LLM answer
         rag_text  = ""

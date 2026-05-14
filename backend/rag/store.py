@@ -7,6 +7,10 @@ from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, P
 
 from core.config import settings
 from core.logger import logger
+from core.errors import RetrievalError
+
+# Module-level Qdrant singleton — prevents connection leak when store is instantiated multiple times
+_QDRANT_CLIENT: QdrantClient | None = None
 
 
 class CoffeeVectorStore:
@@ -48,14 +52,18 @@ class CoffeeVectorStore:
         return self._online
 
     def query(self, query_vector: list[float], limit: int) -> list:
-        response = self._get_client().query_points(
-            collection_name=self.collection_name,
-            query=query_vector,
-            limit=limit,
-            with_payload=True,
-            with_vectors=False,
-        )
-        return getattr(response, "points", []) or []
+        try:
+            response = self._get_client().query_points(
+                collection_name=self.collection_name,
+                query=query_vector,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+            )
+            return getattr(response, "points", []) or []
+        except Exception as exc:
+            logger.warning("Qdrant query failed: {}", exc)
+            return []
 
     def upsert_documents(self, documents: list, vectors: list[list[float]]) -> int:
         if len(documents) != len(vectors):
@@ -92,9 +100,12 @@ class CoffeeVectorStore:
         logger.info("Deleted existing Qdrant points for source {}", source)
 
     def _get_client(self) -> QdrantClient:
-        if self.client is None:
-            self.client = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
-        return self.client
+        global _QDRANT_CLIENT
+        if self.client is not None:
+            return self.client
+        if _QDRANT_CLIENT is None:
+            _QDRANT_CLIENT = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
+        return _QDRANT_CLIENT
 
     def _document_id(self, document) -> str:
         explicit_id = str(document.metadata.get("document_id") or "").strip()

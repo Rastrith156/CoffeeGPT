@@ -5,10 +5,13 @@ from time import perf_counter
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api import api_router
 from core.config import settings
+from core.errors import PlatformError
 from core.logger import setup_logger
+from core.middleware import TraceabilityMiddleware
 from core.runtime import build_container
 
 setup_logger()
@@ -37,6 +40,17 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Fix #16: register typed PlatformError handler so it returns clean JSON, not raw 500s
+    @app.exception_handler(PlatformError)
+    async def platform_error_handler(request: Request, exc: PlatformError):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": exc.message, "context": exc.context},
+        )
+
+    # Fix #15: TraceabilityMiddleware must be added before process-time header
+    app.add_middleware(TraceabilityMiddleware)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -53,6 +67,13 @@ def create_app() -> FastAPI:
         return response
 
     app.include_router(api_router, prefix=settings.api_prefix)
+
+    # Fix #22: Prometheus /metrics endpoint — free observability in one line
+    try:
+        from prometheus_fastapi_instrumentator import Instrumentator
+        Instrumentator().instrument(app).expose(app)
+    except ImportError:
+        pass  # prometheus not installed — skip gracefully
 
     @app.get("/", include_in_schema=False)
     async def root(request: Request):

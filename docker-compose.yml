@@ -8,6 +8,12 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
+    # Fix #25: healthcheck so backend waits until Qdrant is ready
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   postgres:
     image: postgres:16-alpine
@@ -37,8 +43,8 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
+      interval: 5s
+      timeout: 3s
       retries: 5
 
   backend:
@@ -51,20 +57,22 @@ services:
     env_file:
       - .env
     environment:
-      APP_DEBUG: "true"
+      # Fix #8: never expose stack traces in the container
+      APP_DEBUG: "false"
       DATABASE_URL: postgresql://coffeegpt_user:coffeegpt_pass@postgres:5432/coffeegpt
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       QDRANT_HOST: qdrant
       LMSTUDIO_BASE_URL: http://host.docker.internal:1234
+    # Fix #25: wait for all dependencies to be healthy before starting
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - ./backend:/app
       - ./data:/app/data
@@ -81,7 +89,7 @@ services:
     env_file:
       - .env
     environment:
-      APP_DEBUG: "true"
+      APP_DEBUG: "false"
       DATABASE_URL: postgresql://coffeegpt_user:coffeegpt_pass@postgres:5432/coffeegpt
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
@@ -94,7 +102,7 @@ services:
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - ./backend:/app
       - ./data:/app/data

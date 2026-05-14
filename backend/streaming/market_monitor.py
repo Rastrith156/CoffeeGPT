@@ -21,10 +21,11 @@ import asyncio
 from datetime import datetime, timezone
 
 from core.logger import logger
+from core.config import settings
 from streaming.redis_cache import RedisMarketCache
 
 # ─── Thresholds ────────────────────────────────────────────────────────────
-MONITOR_INTERVAL: int   = 15      # seconds between monitor ticks
+# Fix #11: removed MONITOR_INTERVAL module constant — use settings.monitor_interval_seconds
 SPIKE_ALERT_PCT: float  = 2.0     # % change triggers spike alert
 HIGH_VOL_PCT: float     = 2.5     # % volatility triggers high-vol alert
 RISK_HIGH_THRESHOLD     = 70.0    # risk score 0-100
@@ -51,7 +52,7 @@ class MarketMonitor:
 
     async def start(self) -> None:
         self._running = True
-        logger.info("MarketMonitor started (interval={}s)", MONITOR_INTERVAL)
+        logger.info("MarketMonitor started (interval={}s)", settings.monitor_interval_seconds)
         while self._running:
             try:
                 await self._monitor_tick()
@@ -59,7 +60,7 @@ class MarketMonitor:
                 break
             except Exception as exc:
                 logger.warning("MarketMonitor tick error: {}", exc)
-            await asyncio.sleep(MONITOR_INTERVAL)
+            await asyncio.sleep(settings.monitor_interval_seconds)
 
     async def stop(self) -> None:
         self._running = False

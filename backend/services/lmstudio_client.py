@@ -177,6 +177,54 @@ class LMStudioClient:
             raise last_error
         raise RuntimeError("LM Studio chat call failed without an exception")
 
+    async def stream_chat(
+        self,
+        *,
+        model: str,
+        user_input: str,
+        system_prompt: str | None = None,
+    ):
+        """
+        Fix #3: Stream tokens from LM Studio using SSE (stream=True).
+        Yields each text token as a string as it arrives.
+        """
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_input})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": settings.llm_temperature,
+            "max_tokens": settings.llm_max_output_tokens,
+            "stream": True,
+        }
+
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=self.timeout_seconds,
+            headers=self._headers(),
+        ) as client:
+            async with client.stream("POST", "/v1/chat/completions", json=payload) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[len("data:"):].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        import json as _json
+                        chunk = _json.loads(data_str)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        token = delta.get("content")
+                        if token:
+                            yield token
+                    except Exception:
+                        continue
+
+
     def _should_retry_chat_error(self, exc: Exception) -> bool:
         if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
             return True
