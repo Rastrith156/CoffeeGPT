@@ -17,10 +17,21 @@ All external services (LMStudio, Redis, Qdrant) are mocked.
 from __future__ import annotations
 
 import json
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
+
+# Skip the entire module when python-jose is not installed (local dev without
+# full dependency stack). In CI, jose is installed from requirements.txt.
+_jose_real = sys.modules.get("jose")
+_jose_missing = _jose_real is None or isinstance(_jose_real, MagicMock)
+
+pytestmark = pytest.mark.skipif(
+    _jose_missing,
+    reason="python-jose not installed — integration tests require full dep stack",
+)
 
 
 # ── /chat ─────────────────────────────────────────────────────────────────────
@@ -112,7 +123,7 @@ async def test_chat_stream_terminates_with_done(async_client: AsyncClient):
 async def test_market_prices_schema(async_client: AsyncClient):
     """GET /market/prices must return a dict with arabica/robusta keys."""
     with patch(
-        "services.market_service.MarketService.get_current_prices",
+        "services.market_service.MarketService.get_prices",
         new_callable=AsyncMock,
         return_value={
             "arabica": {"price": 225.50, "currency": "USc/lb", "change_pct": 1.2},

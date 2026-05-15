@@ -21,6 +21,24 @@ Fixes applied:
 """
 from __future__ import annotations
 
+# ── Stub heavy security deps that may not be locally installed ────────────────
+# python-jose and passlib are in requirements.txt but not always pip-installed
+# in local dev venvs. We stub them at sys.modules level BEFORE any app module
+# is imported so that core.security (which imports them at module scope) can
+# be loaded in integration tests without the packages being present.
+import sys as _sys
+from unittest.mock import MagicMock as _MM
+
+for _mod in (
+    "jose", "jose.jwt", "jose.exceptions",
+    "passlib", "passlib.context", "passlib.handlers",
+    "passlib.handlers.bcrypt",
+    "asyncpg", "asyncpg.pool", "asyncpg.connection",
+    "databases",
+):
+    _sys.modules.setdefault(_mod, _MM())
+# ─────────────────────────────────────────────────────────────────────────────
+
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -157,13 +175,13 @@ async def async_client() -> AsyncGenerator[AsyncClient, None]:
     httpx.AsyncClient wrapping the FastAPI app directly (no server needed).
     Patches Redis (with AsyncMock) and LMStudio so tests are fully isolated.
 
-    Fix: _get_redis_client must be an AsyncMock so that `await _get_redis_client()`
-    in rate_limit middleware returns None without raising TypeError.
+    Fix: auth_enabled is patched to False so that tests don't need a real JWT.
+    Fix: _get_redis_client must be an AsyncMock so rate-limit middleware works.
     """
     from main import app
 
-    # Rate limiter Redis: AsyncMock returning None skips all rate-limit checks
-    with patch(
+    # Disable auth globally for integration tests
+    with patch("core.config.settings.auth_enabled", False), patch(
         "core.rate_limit._get_redis_client",
         new_callable=AsyncMock,
         return_value=None,
@@ -171,7 +189,6 @@ async def async_client() -> AsyncGenerator[AsyncClient, None]:
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://testserver",
-            headers={"X-API-Key": "bypass_dev_key"},
         ) as client:
             yield client
 

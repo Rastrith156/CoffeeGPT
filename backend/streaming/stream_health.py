@@ -37,14 +37,13 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from core.config import settings
-from core.logger import logger, bind_context
+from core.logger import bind_context
 
 # All known stream IDs the tracker manages by default
 _KNOWN_STREAMS = ("futures_stream", "market_monitor", "intelligence_loop")

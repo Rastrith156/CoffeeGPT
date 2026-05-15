@@ -203,9 +203,11 @@ def setup_logger() -> Any:
     logger.remove()  # type: ignore[attr-defined]
     base = logger._base  # type: ignore[attr-defined]
 
-    console_level = logging.DEBUG if _s.debug else getattr(logging, _s.log_level.upper(), logging.INFO)
+    _console_level: int = logging.DEBUG if _s.debug else int(
+        getattr(logging, _s.log_level.upper(), logging.INFO)
+    )
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(console_level)
+    console_handler.setLevel(_console_level)
     console_handler.setFormatter(
         logging.Formatter(
             "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | "

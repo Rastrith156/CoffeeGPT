@@ -28,7 +28,7 @@ from typing import Any
 import httpx
 
 from core.config import settings
-from core.logger import logger, bind_context
+from core.logger import bind_context
 
 
 @dataclass

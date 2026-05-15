@@ -13,9 +13,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Float, Integer, String
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import DeclarativeBase
 
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    pass
 
 
 class MarketStateSnapshot(Base):

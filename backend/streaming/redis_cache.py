@@ -56,7 +56,7 @@ class RedisMarketCache:
         # Fast path: existing healthy client
         if self._client is not None:
             try:
-                await self._client.ping()
+                await self._client.ping()  # type: ignore[misc]
                 return self._client
             except Exception:
                 # Connection dropped — reset and fall through to reconnect
@@ -76,7 +76,7 @@ class RedisMarketCache:
                 socket_connect_timeout=3,
                 socket_timeout=3,
             )
-            await self._client.ping()
+            await self._client.ping()  # type: ignore[misc]
             logger.info("RedisMarketCache connected to {}", self._url)
             return self._client
         except Exception as exc:
@@ -130,7 +130,7 @@ class RedisMarketCache:
         if client is None:
             return []
         try:
-            items = await client.lrange(key, 0, count - 1)
+            items = await client.lrange(key, 0, count - 1)  # type: ignore[misc]
             return [json.loads(item) for item in items if item]
         except Exception as exc:
             logger.warning("RedisMarketCache.get_list_json error: {}", exc)
@@ -141,7 +141,7 @@ class RedisMarketCache:
         if client is None:
             return False
         try:
-            return await client.ping()
+            return await client.ping()  # type: ignore[misc]
         except Exception as exc:
             logger.warning("RedisMarketCache.is_healthy error: {}", exc)
             return False

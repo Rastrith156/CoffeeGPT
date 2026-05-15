@@ -25,7 +25,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
-from core.logger import logger, bind_context
+from core.logger import bind_context
 from agents.intent_classifier import IntentClassifier
 from agents.routing.intent_router import IntentRouter
 from agents.routing.tool_selector import ToolSelector

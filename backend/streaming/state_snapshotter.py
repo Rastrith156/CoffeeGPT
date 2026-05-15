@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core.config import settings
-from core.logger import logger, bind_context
+from core.logger import bind_context
 
 # Late-import DB to avoid import-time errors when Postgres is unavailable
 _DB_AVAILABLE: bool | None = None
