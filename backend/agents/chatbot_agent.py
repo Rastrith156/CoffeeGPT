@@ -79,6 +79,23 @@ class CoffeeChatbotAgent:
         else:
             self._cache = None
 
+    def _sort_key(
+        self,
+        published_at,
+        rank_score,
+        recency_first: bool,
+    ) -> tuple[float, float]:
+        """
+        Fix #9: Shared sort key for both _build_context and _prepare_documents.
+        Eliminates duplicated sort logic that previously had to be kept in sync.
+
+        When recency_first=True  → (timestamp, score) DESC: newest documents first.
+        When recency_first=False → (score, timestamp) DESC: highest-scored first.
+        """
+        ts    = self._published_timestamp(published_at)
+        score = self._coerce_float(rank_score)
+        return (ts, score) if recency_first else (score, ts)
+
     def _build_context(self, question: str, documents: list) -> tuple[str, list[SourceCitation], list[dict[str, Any]]]:
         grouped_sources: dict[tuple[str, str | None, str | None, str | None], dict[str, Any]] = {}
 
@@ -126,18 +143,16 @@ class CoffeeChatbotAgent:
         if self._is_recency_question(question):
             ordered_sources = sorted(
                 grouped_sources.values(),
-                key=lambda group: (
-                    self._published_timestamp(group.get("published_at")),
-                    self._coerce_float(group.get("rank_score")),
+                key=lambda g: self._sort_key(
+                    g.get("published_at"), g.get("rank_score"), recency_first=True
                 ),
                 reverse=True,
             )[: settings.rag_top_k]
         else:
             ordered_sources = sorted(
                 grouped_sources.values(),
-                key=lambda group: (
-                    self._coerce_float(group.get("rank_score")),
-                    self._published_timestamp(group.get("published_at")),
+                key=lambda g: self._sort_key(
+                    g.get("published_at"), g.get("rank_score"), recency_first=False
                 ),
                 reverse=True,
             )[: settings.rag_top_k]
@@ -172,16 +187,18 @@ class CoffeeChatbotAgent:
             snapshot_date = source_group.get("snapshot_date")
             if snapshot_date:
                 context_lines.append(f"snapshot_date: {snapshot_date}")
-            price = self._coerce_float(source_group.get("price"))
+            # Fix #10: cache coerced floats per iteration — avoids calling _coerce_float
+            # 2-3x on the same value in large retrieval loops.
+            price          = self._coerce_float(source_group.get("price"))
+            change_percent = self._coerce_float(source_group.get("change_percent"))
+            volatility_pct = self._coerce_float(source_group.get("volatility_pct"))
             currency = str(source_group.get("currency") or "").strip()
             if price > 0:
                 context_lines.append(f"price: {price} {currency}".strip())
-            change_percent = source_group.get("change_percent")
-            if self._coerce_float(change_percent) != 0.0:
-                context_lines.append(f"change_percent: {self._coerce_float(change_percent):+.2f}")
-            volatility_pct = source_group.get("volatility_pct")
-            if self._coerce_float(volatility_pct) > 0:
-                context_lines.append(f"volatility_pct: {self._coerce_float(volatility_pct):.2f}")
+            if change_percent != 0.0:
+                context_lines.append(f"change_percent: {change_percent:+.2f}")
+            if volatility_pct > 0:
+                context_lines.append(f"volatility_pct: {volatility_pct:.2f}")
             url = source_group.get("url")
             if url:
                 context_lines.append(f"url: {url}")
@@ -217,24 +234,17 @@ class CoffeeChatbotAgent:
                 logger.warning("Failed to remember response ID: {}", exc)
 
     def _prepare_documents(self, question: str, documents: list) -> list:
-        if self._is_recency_question(question):
-            prepared = sorted(
-                documents,
-                key=lambda document: (
-                    self._published_timestamp(document.metadata.get("published_at")),
-                    self._coerce_float(document.metadata.get("rerank_score") or document.metadata.get("score")),
-                ),
-                reverse=True,
-            )
-        else:
-            prepared = sorted(
-                documents,
-                key=lambda document: (
-                    self._coerce_float(document.metadata.get("rerank_score") or document.metadata.get("score")),
-                    self._published_timestamp(document.metadata.get("published_at")),
-                ),
-                reverse=True,
-            )
+        # Fix #9: shares sort key logic with _build_context via _sort_key()
+        recency_first = self._is_recency_question(question)
+        prepared = sorted(
+            documents,
+            key=lambda doc: self._sort_key(
+                doc.metadata.get("published_at"),
+                doc.metadata.get("rerank_score") or doc.metadata.get("score"),
+                recency_first=recency_first,
+            ),
+            reverse=True,
+        )
         return prepared[: max(settings.rag_top_k * settings.rag_retrieval_multiplier, settings.rag_top_k + 3)]
 
     def _is_recency_question(self, question: str) -> bool:

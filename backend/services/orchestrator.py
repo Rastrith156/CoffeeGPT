@@ -41,6 +41,18 @@ class CoffeeIntelligenceOrchestrator:
             use_rag=use_rag,
         )
 
+    async def classify_intent(self, message: str) -> list[str]:
+        """
+        Fix #3: Public method for intent classification — avoids callers drilling into
+        private agent attributes (_orchestrator_agent._classifier).
+        """
+        if self.orchestrator_agent is not None:
+            return await self.orchestrator_agent._classify_intent(message)
+        # Fallback: use shared IntentClassifier singleton
+        from agents.intent_classifier import IntentClassifier
+        return await IntentClassifier.instance().classify_async(message)
+
+
     async def stream_chat(self, message: str, session_id: str) -> AsyncIterator[str]:
         """
         Fix #3: SSE streaming — calls LM Studio with stream=True and yields token chunks.

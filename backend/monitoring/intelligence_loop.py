@@ -23,6 +23,10 @@ from streaming.redis_cache import RedisMarketCache
 
 INTELLIGENCE_INTERVAL: int = 120   # 2 minutes between auto-analysis cycles
 MAX_STORED_INSIGHTS: int   = 20
+# Fix #18: distributed lock constants — only one worker writes per cycle
+# across a multi-worker Gunicorn deploy.
+_LOCK_KEY:  str = "coffee:intelligence_loop:leader_lock"
+_LOCK_TTL:  int = INTELLIGENCE_INTERVAL + 30  # 30s grace period over the interval
 
 
 class IntelligenceLoop:
@@ -63,6 +67,44 @@ class IntelligenceLoop:
     # ─── Intelligence cycle ───────────────────────────────────────────────────
 
     async def _intelligence_cycle(self) -> None:
+        """
+        Fix #18: Acquires a Redis advisory lock before writing.
+
+        When multiple Gunicorn workers all run IntelligenceLoop, only the one
+        that wins the SET NX EX race executes the cycle; the others skip
+        gracefully without blocking.
+        """
+        client = await self._cache._get_client()
+        if client is None:
+            # No Redis — run anyway (single-worker mode)
+            await self._run_cycle()
+            return
+
+        import os
+        owner_id = str(os.getpid())  # unique per process
+        try:
+            # SET NX EX: atomic "set if not exists" with TTL
+            acquired = await client.set(  # type: ignore[misc]
+                _LOCK_KEY,
+                owner_id,
+                nx=True,
+                ex=_LOCK_TTL,
+            )
+            if not acquired:
+                logger.debug("IntelligenceLoop: lock held by another worker — skipping cycle")
+                return
+            await self._run_cycle()
+        finally:
+            # Only release the lock if we own it (don't evict another worker's lock)
+            try:
+                current = await client.get(_LOCK_KEY)  # type: ignore[misc]
+                if current == owner_id:
+                    await client.delete(_LOCK_KEY)  # type: ignore[misc]
+            except Exception as exc:
+                logger.warning("IntelligenceLoop: failed to release leader lock: {}", exc)
+
+    async def _run_cycle(self) -> None:
+        """Inner cycle logic — separated so the distributed lock wrapper stays slim."""
         self._cycle_count += 1
         snapshot = await self._cache.get_live_snapshot()
         risk     = await self._cache.get_json("coffee:live:risk")
@@ -78,7 +120,6 @@ class IntelligenceLoop:
         risk_level = (risk or {}).get("risk_level", "unknown")
         risk_score = float((risk or {}).get("risk_score") or 0)
 
-        # Build insight payload
         insight = self._build_insight(
             a_price=a_price, r_price=r_price,
             a_change=a_change, r_change=r_change,

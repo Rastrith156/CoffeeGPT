@@ -143,7 +143,13 @@ class SessionMemory:
         return session.get("last_market_snapshot")
 
     async def build_context_summary(self, session_id: str) -> str:
-        """Build a short prior-context string to prepend to new LLM prompts."""
+        """Build a short prior-context string to prepend to new LLM prompts.
+
+        Fix #12: content is truncated at a word boundary (not a hard char slice)
+                 so context doesn't end mid-word.
+        Fix #19: stops adding history once ~2 000 chars are accumulated to stay
+                 well inside the model's context window budget.
+        """
         session = await self.load(session_id)
         history = session.get("history", [])
         if not history:
@@ -151,10 +157,23 @@ class SessionMemory:
 
         recent = history[-6:]   # last 3 pairs
         lines = ["Prior conversation context:"]
+        budget_remaining = 2_000  # rough char-based token proxy (~4 chars/token)
         for item in recent:
-            role = "User" if item["role"] == "user" else "CoffeeGPT"
-            content = str(item.get("content", ""))[:200]
-            lines.append(f"{role}: {content}")
+            role    = "User" if item["role"] == "user" else "CoffeeGPT"
+            content = str(item.get("content", ""))
+
+            # Fix #12: truncate at word boundary, not arbitrary char offset
+            if len(content) > 200:
+                content = content[:200].rsplit(" ", 1)[0].rstrip(".,;:") + "…"
+
+            entry = f"{role}: {content}"
+
+            # Fix #19: stop if we have already filled the context budget
+            if budget_remaining <= 0:
+                break
+            budget_remaining -= len(entry)
+            lines.append(entry)
+
         return "\n".join(lines)
 
     async def delete(self, session_id: str) -> bool:

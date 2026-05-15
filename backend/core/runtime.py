@@ -182,20 +182,26 @@ class ApplicationContainer:
 def build_container() -> ApplicationContainer:
     settings.ensure_directories()
 
-    # Fix #1: production safety guard — crash early with a clear message
+    # Fix #4: production safety guards — explicit raises instead of assert
+    # (assert statements are silently stripped when Python runs with -O / -OO,
+    # which many production Docker images and gunicorn configs use)
     if settings.is_production:
-        assert settings.secret_key not in ("change_me", "change_me_to_a_secure_random_string"), (
-            "SECRET_KEY must be changed from the default value in production. "
-            "Set SECRET_KEY=<random-string> in your .env file."
-        )
+        if settings.secret_key in ("change_me", "change_me_to_a_secure_random_string"):
+            raise ValueError(
+                "SECRET_KEY must be changed from the default value in production. "
+                "Set SECRET_KEY=<random-string> in your .env file."
+            )
         default_keys = {"coffeegpt_master_key_2026", "coffee_enterprise_key"}
-        assert not any(k in default_keys for k in settings.api_keys), (
-            "Default API keys detected in production. "
-            "Replace API_KEYS with real secret keys in your .env file."
-        )
-        assert len(settings.api_keys) > 0, (
-            "API_KEYS must not be empty in production. Set AUTH_ENABLED=true and provide real keys."
-        )
+        if any(k in default_keys for k in settings.api_keys):
+            raise ValueError(
+                "Default API keys detected in production. "
+                "Replace API_KEYS with real secret keys in your .env file."
+            )
+        if len(settings.api_keys) == 0:
+            raise ValueError(
+                "API_KEYS must not be empty in production. "
+                "Set AUTH_ENABLED=true and provide real keys."
+            )
 
     # ── Cold layer ────────────────────────────────────────────────────────────
     market_service   = MarketService()

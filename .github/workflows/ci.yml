@@ -26,10 +26,13 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install ruff
-        run: pip install ruff==0.4.4
+        run: pip install "ruff==0.4.4"
 
-      - name: Run ruff
+      - name: Run ruff check (linting)
         run: ruff check . --output-format=github
+
+      - name: Run ruff format check (formatting)
+        run: ruff format --check . --diff
 
   # ── Backend: Type check ───────────────────────────────────────────────────
   typecheck:
@@ -52,10 +55,18 @@ jobs:
           key: pip-${{ runner.os }}-${{ hashFiles('backend/requirements.txt') }}
 
       - name: Install dependencies
-        run: pip install -r requirements.txt mypy types-redis types-requests aiosqlite
+        run: pip install -r requirements.txt mypy types-redis types-requests aiosqlite "python-jose[cryptography]" passlib[bcrypt] asyncpg databases
 
-      - name: Run mypy
-        run: mypy . --ignore-missing-imports --exclude venv --exclude alembic
+      - name: Run mypy (strict on core modules)
+        run: |
+          mypy agents/ core/ \
+            --ignore-missing-imports \
+            --strict \
+            --exclude venv --exclude alembic
+          mypy . \
+            --ignore-missing-imports \
+            --exclude venv --exclude alembic \
+            --exclude agents --exclude core
 
   # ── Backend: Tests with coverage ──────────────────────────────────────────
   test:
@@ -90,7 +101,9 @@ jobs:
           key: pip-${{ runner.os }}-${{ hashFiles('backend/requirements.txt') }}
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        # Fix #20: include full integration-test dep stack so the 8 previously-skipped
+        # integration tests (jose / asyncpg / passlib) now execute in CI.
+        run: pip install -r requirements.txt "python-jose[cryptography]" passlib[bcrypt] asyncpg databases
 
       - name: Run pytest with coverage
         env:

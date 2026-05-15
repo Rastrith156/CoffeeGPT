@@ -95,6 +95,21 @@ class IntentClassifier:
             cls._instance = cls()
         return cls._instance
 
+    @classmethod
+    def reset(cls) -> None:
+        """
+        Fix #15: Reset the singleton so the next call to instance() creates a
+        fresh object. Call this in test teardown to prevent cross-test pollution
+        from a warmed shared IntentClassifier.
+
+        Example in conftest.py:
+            @pytest.fixture(autouse=True)
+            def reset_classifier():
+                yield
+                IntentClassifier.reset()
+        """
+        cls._instance = None
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def __init__(self, model_name: str = MODEL_NAME) -> None:

@@ -31,6 +31,19 @@ from agents.routing.intent_router import IntentRouter
 from agents.routing.tool_selector import ToolSelector
 from streaming.redis_cache import RedisMarketCache
 
+# ── Render constants (presentation layer) ─────────────────────────────────────
+# Fix #11: emoji icons and Markdown formatting are declared here, at the module
+# boundary, rather than hardcoded inside _synthesise() business logic.
+# To change formatting: edit only this section, not the orchestration code.
+_AGENT_ICONS: dict[str, str] = {
+    "futures":  "\U0001f4c8",  # 📈
+    "risk":     "\U0001f3af",  # 🎯
+    "alert":    "\U0001f514",  # 🔔
+    "forecast": "\U0001f52d",  # 🔭
+    "weather":  "\U0001f326",  # 🌦
+}
+_RAG_SECTION_HEADER = "---\n\n**Intelligence Analysis:**\n\n"
+
 
 class OrchestratorAgent:
     """
@@ -174,15 +187,13 @@ class OrchestratorAgent:
         rag_response: Any,
         session_id: str,
     ) -> dict:
+        # Fix #11: rendering uses module-level constants, not hardcoded literals
         blocks: list[str] = []
-        _icons = {"futures": "📈", "risk": "🎯", "alert": "🔔", "forecast": "🔭", "weather": "🌦"}
-
-        for key, icon in _icons.items():
+        for key, icon in _AGENT_ICONS.items():
             if key in agent_results:
                 summary = agent_results[key].get("summary", "")
-                label   = key.title()
                 if summary:
-                    blocks.append(f"{icon} **{label}**: {summary}")
+                    blocks.append(f"{icon} **{key.title()}**: {summary}")
 
         rag_text: str     = ""
         rag_sources: list = []
@@ -196,7 +207,7 @@ class OrchestratorAgent:
                 self._log.warning("Failed to extract rag_response attributes: {}", exc)
 
         if blocks and rag_text:
-            answer = "\n".join(blocks) + "\n\n---\n\n**Intelligence Analysis:**\n\n" + rag_text
+            answer = "\n".join(blocks) + "\n\n" + _RAG_SECTION_HEADER + rag_text
         elif blocks:
             answer = "\n".join(blocks)
         elif rag_text:

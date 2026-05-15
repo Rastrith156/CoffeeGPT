@@ -53,21 +53,15 @@ class RedisMarketCache:
         self._client: aioredis.Redis | None = None
 
     async def _get_client(self) -> aioredis.Redis | None:
-        # Fast path: existing healthy client
+        # Fix #17: removed preemptive PING on the happy path that previously
+        # doubled round-trips on every set_json / get_json call.
+        # We only reconnect when self._client is None (first call or after error).
+        # Individual command methods catch connection errors in their own except
+        # blocks and reset self._client = None to trigger the next call to reconnect.
         if self._client is not None:
-            try:
-                await self._client.ping()  # type: ignore[misc]
-                return self._client
-            except Exception:
-                # Connection dropped — reset and fall through to reconnect
-                logger.warning("RedisMarketCache: connection lost, attempting reconnect to {}", self._url)
-                try:
-                    await self._client.aclose()
-                except Exception:
-                    pass
-                self._client = None
+            return self._client
 
-        # Reconnect attempt
+        # Reconnect attempt — ping here to verify the new connection is live
         try:
             self._client = aioredis.from_url(
                 self._url,
@@ -81,7 +75,6 @@ class RedisMarketCache:
             return self._client
         except Exception as exc:
             logger.warning("RedisMarketCache: Redis unavailable ({})", exc)
-            # Always reset to None so the next call retries
             self._client = None
             return None
 

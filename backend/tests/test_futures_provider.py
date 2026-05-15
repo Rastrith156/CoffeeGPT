@@ -8,13 +8,12 @@ HTTP client is patched to return synthetic response fixtures.
 """
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from streaming.providers.barchart_provider import BarchartProvider, RawTickData
-from streaming.normalizer import TickNormalizer, NormalisedTick
+from streaming.normalizer import TickNormalizer
 
 
 # ── TickNormalizer tests ──────────────────────────────────────────────────────
@@ -143,7 +142,7 @@ class TestBarchartProviderSynthetic:
 
     def test_synthetic_state_updates_prev_price(self):
         provider = BarchartProvider()
-        r1 = provider._synthetic_arabica()
+        _r1 = provider._synthetic_arabica()
         r2 = provider._synthetic_arabica()
         # _prev_arabica is stored at full float precision; r2.raw["lastPrice"] is rounded to 4dp.
         # Compare at the same rounded precision.

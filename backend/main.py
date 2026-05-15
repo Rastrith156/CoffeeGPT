@@ -5,6 +5,7 @@ from time import perf_counter
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
 from api import api_router
@@ -91,6 +92,45 @@ def create_app() -> FastAPI:
             container = build_container()
             request.app.state.container = container
         return container.orchestrator.platform_overview()
+
+    # Fix #22: declare OpenAPI security schemes so /docs Swagger UI shows auth
+    # fields and generated client SDKs include them automatically.
+    def custom_openapi():
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=settings.app_name,
+            version=settings.app_version,
+            description=(
+                "Enterprise AI platform for coffee market intelligence, retrieval, "
+                "forecasting, policy tracking, and ingestion."
+            ),
+            routes=app.routes,
+        )
+        schema.setdefault("components", {})
+        schema["components"]["securitySchemes"] = {
+            "ApiKeyAuth": {
+                "type": "apiKey",
+                "in": "header",
+                "name": "X-API-Key",
+                "description": "Pass your CoffeeGPT API key via the X-API-Key header.",
+            },
+            "BearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+                "description": "Short-lived JWT access token (Bearer <token>).",
+            },
+        }
+        # Apply both schemes globally so every operation shows the lock icon
+        schema["security"] = [
+            {"ApiKeyAuth": []},
+            {"BearerAuth": []},
+        ]
+        app.openapi_schema = schema
+        return schema
+
+    app.openapi = custom_openapi  # type: ignore[method-assign]
 
     return app
 

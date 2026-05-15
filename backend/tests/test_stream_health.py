@@ -16,9 +16,7 @@ Tests (all offline — no Redis, no network):
 """
 from __future__ import annotations
 
-import time
 from datetime import datetime, timezone, timedelta
-from unittest.mock import MagicMock
 
 import pytest
 

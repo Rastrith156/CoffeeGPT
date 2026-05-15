@@ -1,7 +1,11 @@
 """
 core/rate_limit.py
 ==================
-Task 3 — Per-endpoint rate limiting via Redis fixed-window counters.
+Fix #5: Global Redis singleton is now protected by asyncio.Lock — safe under
+         concurrent async request handlers that could otherwise both find
+         _client is None, both try to connect, and one leaks a socket.
+Fix #8: Removed dead _ENDPOINT_LIMITS dict that was defined but never read.
+         _limit_for() is the single authoritative source of per-endpoint limits.
 
 Usage in route files:
     from core.rate_limit import endpoint_rate_limiter
@@ -21,6 +25,7 @@ Fail-open: if Redis is unavailable, requests pass through gracefully.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -31,39 +36,50 @@ from core.config import settings
 from core.logger import logger
 from core.security import get_api_key
 
-# ── Redis client (lazy singleton) ─────────────────────────────────────────────
+# ── Redis client (lazy singleton, concurrency-safe) ───────────────────────────
+# Fix #5: asyncio.Lock prevents the race where two concurrent coroutines both
+# see _client is None and both attempt to create a connection, leaking a socket.
 _client: aioredis.Redis | None = None
+_client_lock: asyncio.Lock | None = None   # created lazily (cannot create at import time)
+
+
+def _get_or_create_lock() -> asyncio.Lock:
+    """Return the module-level lock, creating it inside the running event loop."""
+    global _client_lock
+    if _client_lock is None:
+        _client_lock = asyncio.Lock()
+    return _client_lock
 
 
 async def _get_redis_client() -> aioredis.Redis | None:
     global _client
+    # Fast path — already connected, return immediately without acquiring lock
     if _client is not None:
         return _client
-    try:
-        _client = aioredis.from_url(
-            settings.redis_url,
-            encoding="utf-8",
-            decode_responses=True,
-            socket_connect_timeout=2,
-            socket_timeout=2,
-        )
-        await _client.ping()
-        return _client
-    except Exception as exc:
-        logger.debug("RateLimiter: Redis unavailable, passthrough mode ({})", exc)
-        _client = None
-        return None
+
+    async with _get_or_create_lock():
+        # Re-check under the lock: another coroutine may have connected while we waited
+        if _client is not None:
+            return _client
+        try:
+            _client = aioredis.from_url(
+                settings.redis_url,
+                encoding="utf-8",
+                decode_responses=True,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+            )
+            await _client.ping()  # type: ignore[misc]
+            return _client
+        except Exception as exc:
+            logger.debug("RateLimiter: Redis unavailable, passthrough mode ({})", exc)
+            _client = None
+            return None
 
 
-# ── Per-endpoint limit map ────────────────────────────────────────────────────
-
-_ENDPOINT_LIMITS: dict[str, int | None] = {
-    "chat":      None,   # resolved at runtime from settings
-    "market":    None,
-    "ingestion": None,
-    "auth":      None,
-}
-
+# ── Per-endpoint limit resolver ───────────────────────────────────────────────
+# Fix #8: _ENDPOINT_LIMITS dict removed — it was never read.
+#         _limit_for() is the single authoritative source of per-endpoint limits.
 
 def _limit_for(endpoint: str) -> int:
     mapping = {

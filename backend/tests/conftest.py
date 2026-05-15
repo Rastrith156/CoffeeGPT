@@ -38,15 +38,16 @@ for _mod in (
 ):
     _sys.modules.setdefault(_mod, _MM())
 # ─────────────────────────────────────────────────────────────────────────────
+# These imports MUST come after the sys.modules stub block above.
+# noqa: E402 suppresses "module level import not at top of file" — intentional.
+from typing import AsyncGenerator  # noqa: E402
+from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 
-from typing import AsyncGenerator
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+import pytest  # noqa: E402
+import pytest_asyncio  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from qdrant_client import QdrantClient  # noqa: E402
+from qdrant_client.models import Distance, VectorParams  # noqa: E402
 
 # Fake Redis — in-memory, no server needed
 try:

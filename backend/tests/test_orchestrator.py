@@ -128,8 +128,8 @@ async def test_weather_task_dispatched_on_weather_intent():
 # sys.modules level so that 'from core.security import sanitize_user_input'
 # works without requiring those heavy packages.
 
-import sys as _sys
-from unittest.mock import MagicMock as _MM
+import sys as _sys  # noqa: E402
+from unittest.mock import MagicMock as _MM  # noqa: E402
 
 def _mock_security_deps() -> None:
     """Inject stubs for jose and passlib so core.security can be imported."""

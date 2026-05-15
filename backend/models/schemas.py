@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class APIModel(BaseModel):
@@ -68,9 +68,25 @@ class SourceCitation(APIModel):
 
 
 class ChatRequest(APIModel):
-    message: str = Field(..., min_length=1, max_length=2000)
-    session_id: str = Field(default="default")
-    use_rag: bool = Field(default=True)
+    message:    str  = Field(..., min_length=1, max_length=2000)
+    # Fix #16: session_id capped at 128 chars with a safe pattern — it becomes a
+    # Redis key (coffee:session:<id>); an unbounded string is a DoS surface.
+    session_id: str  = Field(
+        default="default",
+        max_length=128,
+        description="Alphanumeric session identifier (a-z, A-Z, 0-9, -, _).",
+    )
+    use_rag:    bool = Field(default=True)
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_session_id(cls, v: str) -> str:
+        import re
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", v):
+            raise ValueError(
+                "session_id must contain only alphanumeric characters, hyphens, or underscores."
+            )
+        return v
 
 
 class ChatResponse(APIModel):

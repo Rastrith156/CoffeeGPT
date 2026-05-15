@@ -3,9 +3,11 @@ api/chat.py
 ===========
 Chat endpoints.
 
-Task 2 update: /chat/stream now calls provider.stream_generate() directly
-for real token-by-token SSE streaming, falling back to orchestrator
-word-chunked simulation only if the provider doesn't stream.
+Fix #1: SSE yield strings now use real \\n\\n newlines (not double-escaped \\\\n\\\\n).
+Fix #2: `intent` is sent once in a dedicated meta frame, not embedded in every token.
+Fix #3: Intent classification is delegated via orchestrator.classify_intent() —
+         no more drilling into ._orchestrator_agent._classifier private chain.
+Fix #14: The outer except block now logs the error before falling through to fallback.
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from core.dependencies import get_orchestrator
+from core.logger import logger
 from core.rate_limit import endpoint_rate_limiter
 from core.security import get_api_key, sanitize_user_input
 from llm.providers.factory import get_provider
@@ -22,7 +25,7 @@ from models.schemas import ChatRequest, ChatResponse
 
 router = APIRouter()
 
-# Per-endpoint rate limits (Task 3)
+# Per-endpoint rate limits
 _chat_rate_limit = endpoint_rate_limiter("chat")
 
 
@@ -53,49 +56,61 @@ async def chat_stream(
     """
     SSE streaming endpoint — streams LLM tokens as they arrive.
 
-    Strategy:
-      1. Try provider.stream_generate() for real token-by-token output.
-      2. If orchestrator has no direct provider access, fall back to
-         orchestrator.stream_chat() (word-chunked simulation).
+    Fix #1: All yield statements produce real newlines (\\n\\n), not escaped strings.
+    Fix #2: intent is sent once as a dedicated 'event: meta' frame before token stream.
+    Fix #3: intent classification goes through orchestrator.classify_intent() —
+            no private-attribute chain drilling.
 
-    SSE format:  data: {"token": "<text>"}\\n\\n
-                 data: [DONE]\\n\\n
+    SSE format:
+        event: meta\\n
+        data: {"intent": [...]}\\n\\n
+        data: {"token": "<text>"}\\n\\n
+        data: [DONE]\\n\\n
     """
     sanitize_user_input(request.message)
 
     async def token_generator():
+        # Fix #3: classify intent via the public orchestrator method, not private attrs
+        intent = await orchestrator.classify_intent(request.message)
+
+        # Fix #2: send intent exactly ONCE as a dedicated meta event before tokens
+        yield f"event: meta\ndata: {json.dumps({'intent': intent})}\n\n"
+
         try:
             provider = get_provider()
-            # Build the prompt via orchestrator intent classification
-            intent = await orchestrator._orchestrator_agent._classifier.classify_async(
-                request.message
-            ) if orchestrator._orchestrator_agent else ["general"]
 
-            # System context for the LLM
             system_prompt = (
                 "You are CoffeeGPT, an elite AI analyst specialising in global coffee commodity markets. "
                 "Provide concise, actionable, data-driven intelligence. "
                 "Use markdown formatting where appropriate."
             )
 
+            # Fix #1: real \n\n newlines — SSE spec requires two newlines to terminate each frame
             async for token in provider.stream_generate(
                 prompt=request.message,
                 system_prompt=system_prompt,
             ):
-                yield f"data: {json.dumps({'token': token, 'intent': intent})}\\n\\n"
+                yield f"data: {json.dumps({'token': token})}\n\n"
 
-        except Exception:
-            # Graceful fallback — try orchestrator stream_chat
+        except Exception as primary_exc:
+            # Fix #14: always log the error before falling through — never swallow silently
+            logger.warning(
+                "chat_stream primary provider path failed, falling back to orchestrator: {}",
+                primary_exc,
+            )
             try:
                 async for token in orchestrator.stream_chat(
                     message=request.message,
                     session_id=request.session_id,
                 ):
-                    yield f"data: {json.dumps({'token': token})}\\n\\n"
-            except Exception as inner_exc:
-                yield f"data: {json.dumps({'error': str(inner_exc)})}\\n\\n"
+                    yield f"data: {json.dumps({'token': token})}\n\n"
+            except Exception as fallback_exc:
+                logger.error("chat_stream fallback also failed: {}", fallback_exc)
+                yield f"data: {json.dumps({'error': str(fallback_exc)})}\n\n"
+
         finally:
-            yield "data: [DONE]\\n\\n"
+            # Fix #1: real newline terminator
+            yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         token_generator(),

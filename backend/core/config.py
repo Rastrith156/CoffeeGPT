@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -186,6 +186,38 @@ class Settings(BaseSettings):
             if self.jwt_secret_key.startswith("change_me"):
                 raise ValueError("JWT_SECRET_KEY must be set to a secure value in production.")
         return self
+
+    @field_validator("llm_model", mode="before")
+    @classmethod
+    def _warn_non_standard_model(cls, v: str) -> str:
+        """
+        Fix #13: emit a clear warning when a model name looks like it refers to
+        a locally-quantised or personal model that contributors may not have.
+
+        We detect this heuristically: the default dolphin model name is very
+        specific and will fail immediately on any machine that doesn't have it.
+        The validator does NOT reject the value — it just warns loudly so
+        contributors see the issue before runtime.
+        """
+        import logging as _logging
+        _KNOWN_STANDARD_PREFIXES = (
+            "gpt-", "claude-", "llama", "mistral", "gemma",
+            "phi-", "falcon", "qwen", "internlm",
+        )
+        v_lower = v.lower()
+        is_standard = any(v_lower.startswith(p) for p in _KNOWN_STANDARD_PREFIXES)
+        is_local_path = "/" in v or "\\" in v
+        # The default dolphin model is our canonical "looks personal" example
+        is_personal_default = "dolphin" in v_lower or "smashed" in v_lower
+        if not is_standard or is_local_path or is_personal_default:
+            _logging.getLogger("coffeegpt.config").warning(
+                "LLM_MODEL=%r looks like a locally-quantised or personal model name. "
+                "Contributors who do not have this model in LM Studio will see a "
+                "connection error at startup. Set LLM_MODEL in your .env to override. "
+                "See .env.example for guidance.",
+                v,
+            )
+        return v
 
     @property
     def is_production(self) -> bool:

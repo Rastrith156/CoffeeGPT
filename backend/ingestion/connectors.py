@@ -4,7 +4,7 @@ import asyncio
 import html
 import re
 import xml.etree.ElementTree as ET
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from datetime import datetime
 from urllib.parse import quote
 
@@ -16,7 +16,13 @@ from core.logger import logger
 from models.schemas import CommodityVariety, HistoryWindow, NewsCategory, SourceDefinition
 
 
-class BaseConnector:
+class BaseConnector(ABC):
+    """Abstract base class for all data connectors.
+
+    Fix #7: inherits ABC so @abstractmethod is properly enforced —
+    subclasses that forget to implement fetch() raise TypeError at class
+    creation time, not NotImplementedError at runtime.
+    """
     name = ""
     description = ""
 

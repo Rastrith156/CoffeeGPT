@@ -31,7 +31,11 @@ bearer_scheme  = HTTPBearer(auto_error=False)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # ── Prompt injection deny-list ────────────────────────────────────────────────
-INJECTION_PATTERNS = [
+# Fix #6a: patterns are applied after Unicode NFKC normalisation so homoglyph
+#  substitutions (ｉｇｎｏｒｅ, zero-width spaces, look-alike chars) are defeated.
+# Fix #6b: context-sensitive patterns (e.g. "act as") use word-boundary regex
+#  so legitimate inputs ("I act as a buyer") are not blocked.
+_INJECTION_LITERALS: tuple[str, ...] = (
     "ignore all prior",
     "ignore previous instructions",
     "you are now",
@@ -41,11 +45,24 @@ INJECTION_PATTERNS = [
     "reveal your prompt",
     "print your instructions",
     "show your system prompt",
-    "act as",
     "pretend you are",
     "jailbreak",
     "dan mode",
-]
+)
+
+# These require word-boundary matching to avoid false positives on natural text
+_INJECTION_WORD_BOUNDARY: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bact as\s+(?:a\s+)?(?:different|another|alternative|new|other)", re.IGNORECASE),
+    re.compile(r"\bact as\s+(?:an?\s+)?(?:ai|llm|gpt|bot|assistant|expert\s+hacker)", re.IGNORECASE),
+    re.compile(r"\bimagine\s+you\s+(?:are|have\s+no)", re.IGNORECASE),
+    re.compile(r"\bignore\s+(?:all|any|your)\s+(?:previous|prior|above)", re.IGNORECASE),
+)
+
+
+def _normalise_text(text: str) -> str:
+    """Apply Unicode NFKC normalisation to collapse homoglyphs and full-width chars."""
+    import unicodedata
+    return unicodedata.normalize("NFKC", text)
 
 # ── Localhost check ────────────────────────────────────────────────────────────
 _LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
@@ -188,14 +205,32 @@ def scrub_secrets(text: str) -> str:
 def sanitize_user_input(text: str) -> str:
     """
     Sanitize user input against prompt injection and control characters.
+
+    Fix #6: Three-layer approach:
+      1. Unicode NFKC normalisation — collapses homoglyphs and full-width chars.
+      2. Literal pattern matching (case-insensitive) for unambiguous phrases.
+      3. Word-boundary regex for context-sensitive patterns ("act as" etc.) that
+         would otherwise produce false positives on legitimate business inputs.
+
     Raises HTTP 400 on detected injection patterns.
     """
     if not text:
         return text
 
-    lowered = text.lower()
-    for pattern in INJECTION_PATTERNS:
+    normalised = _normalise_text(text)
+    lowered = normalised.lower()
+
+    # Layer 1: literal substring match after normalisation
+    for pattern in _INJECTION_LITERALS:
         if pattern in lowered:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Request contains disallowed patterns.",
+            )
+
+    # Layer 2: word-boundary regex patterns (context-sensitive)
+    for rx_pattern in _INJECTION_WORD_BOUNDARY:
+        if rx_pattern.search(normalised):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Request contains disallowed patterns.",
