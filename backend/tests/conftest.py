@@ -1,7 +1,7 @@
 """
 tests/conftest.py
 =================
-Task 4 — Shared pytest fixtures for all integration and contract tests.
+Shared pytest fixtures for all integration and contract tests.
 
 Fixtures:
   mock_redis      → fakeredis.aioredis in-memory (no real Redis needed)
@@ -9,10 +9,18 @@ Fixtures:
   mock_lmstudio   → AsyncMock provider returning canned responses
   async_client    → httpx.AsyncClient wrapping the FastAPI app
   seed_qdrant     → inserts 3 known coffee documents for RAG tests
+  mock_market_monitor → MarketMonitor with injected mock RedisMarketCache
+
+Fixes applied:
+  - event_loop fixture removed (deprecated in pytest-asyncio ≥ 0.23) —
+    asyncio_mode="auto" in pytest.ini/pyproject controls session-wide loop
+  - async_client patches _get_redis_client with AsyncMock (not a sync mock)
+    to prevent coroutine-not-awaited warnings in rate_limit middleware
+  - fakeredis.FakeServer instantiation guarded for compat with both
+    fakeredis 2.x API variants
 """
 from __future__ import annotations
 
-import asyncio
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -30,16 +38,6 @@ except ImportError:
     _FAKEREDIS_AVAILABLE = False
 
 
-# ── Event loop ────────────────────────────────────────────────────────────────
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """Single event loop for the entire test session."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
 # ── Redis ─────────────────────────────────────────────────────────────────────
 
 @pytest_asyncio.fixture
@@ -47,8 +45,13 @@ async def mock_redis():
     """In-memory async Redis client (fakeredis)."""
     if not _FAKEREDIS_AVAILABLE:
         pytest.skip("fakeredis not installed")
-    server = fake_aioredis.FakeServer()
-    client = fake_aioredis.FakeRedis(server=server, decode_responses=True)
+    try:
+        # fakeredis 2.x
+        server = fake_aioredis.FakeServer()
+        client = fake_aioredis.FakeRedis(server=server, decode_responses=True)
+    except AttributeError:
+        # Older API — FakeServer may not exist
+        client = fake_aioredis.FakeRedis(decode_responses=True)
     yield client
     await client.aclose()
 
@@ -59,7 +62,6 @@ async def mock_redis():
 def mock_qdrant():
     """In-memory Qdrant client (no server needed)."""
     client = QdrantClient(":memory:")
-    # Create the test collection
     client.create_collection(
         collection_name="coffee_intelligence",
         vectors_config=VectorParams(size=384, distance=Distance.COSINE),
@@ -100,7 +102,6 @@ def seed_qdrant(mock_qdrant: QdrantClient):
         },
     ]
 
-    # Use deterministic seed for reproducible vectors
     rng = np.random.default_rng(seed=42)
     points = []
     for doc in docs:
@@ -154,12 +155,19 @@ def mock_lmstudio():
 async def async_client() -> AsyncGenerator[AsyncClient, None]:
     """
     httpx.AsyncClient wrapping the FastAPI app directly (no server needed).
-    Patches Redis and LMStudio so tests are fully isolated.
+    Patches Redis (with AsyncMock) and LMStudio so tests are fully isolated.
+
+    Fix: _get_redis_client must be an AsyncMock so that `await _get_redis_client()`
+    in rate_limit middleware returns None without raising TypeError.
     """
     from main import app
 
-    # Patch Redis in rate limiter to avoid external connection
-    with patch("core.rate_limit._get_redis_client", return_value=None):
+    # Rate limiter Redis: AsyncMock returning None skips all rate-limit checks
+    with patch(
+        "core.rate_limit._get_redis_client",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://testserver",
@@ -171,17 +179,22 @@ async def async_client() -> AsyncGenerator[AsyncClient, None]:
 # ── Market Monitor fixture ────────────────────────────────────────────────────
 
 @pytest.fixture
-def mock_market_monitor(mock_redis):
-    """MarketMonitor with injected fake Redis cache."""
+def mock_market_monitor():
+    """MarketMonitor with injected fake RedisMarketCache."""
     from streaming.redis_cache import RedisMarketCache
     from streaming.market_monitor import MarketMonitor
 
     cache = MagicMock(spec=RedisMarketCache)
-    cache.get_arabica = AsyncMock(return_value=None)
-    cache.get_robusta = AsyncMock(return_value=None)
-    cache.push_alert = AsyncMock(return_value=True)
-    cache.push_spike = AsyncMock(return_value=True)
-    cache.update_arabica = AsyncMock(return_value=True)
-    cache.update_robusta = AsyncMock(return_value=True)
+    cache.get_arabica      = AsyncMock(return_value=None)
+    cache.get_robusta      = AsyncMock(return_value=None)
+    cache.get_live_snapshot = AsyncMock(return_value={
+        "arabica": None, "robusta": None,
+        "volatility": {}, "recent_alerts": [],
+    })
+    cache.push_alert       = AsyncMock(return_value=True)
+    cache.push_spike       = AsyncMock(return_value=True)
+    cache.update_arabica   = AsyncMock(return_value=True)
+    cache.update_robusta   = AsyncMock(return_value=True)
+    cache.set_json         = AsyncMock(return_value=True)
     monitor = MarketMonitor(cache=cache)
     return monitor, cache

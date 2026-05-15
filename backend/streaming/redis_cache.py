@@ -41,6 +41,11 @@ class RedisMarketCache:
     """
     Async Redis wrapper for the live market hot-cache layer.
     All methods fail gracefully when Redis is unavailable.
+
+    Reconnect behaviour: if _client is None (first call or after a previous
+    failure), a new connection is attempted on every call to _get_client().
+    This means the cache transparently recovers when Redis comes back online
+    without requiring a server restart.
     """
 
     def __init__(self, redis_url: str | None = None) -> None:
@@ -48,8 +53,21 @@ class RedisMarketCache:
         self._client: aioredis.Redis | None = None
 
     async def _get_client(self) -> aioredis.Redis | None:
+        # Fast path: existing healthy client
         if self._client is not None:
-            return self._client
+            try:
+                await self._client.ping()
+                return self._client
+            except Exception:
+                # Connection dropped — reset and fall through to reconnect
+                logger.warning("RedisMarketCache: connection lost, attempting reconnect to {}", self._url)
+                try:
+                    await self._client.aclose()
+                except Exception:
+                    pass
+                self._client = None
+
+        # Reconnect attempt
         try:
             self._client = aioredis.from_url(
                 self._url,
@@ -63,6 +81,7 @@ class RedisMarketCache:
             return self._client
         except Exception as exc:
             logger.warning("RedisMarketCache: Redis unavailable ({})", exc)
+            # Always reset to None so the next call retries
             self._client = None
             return None
 

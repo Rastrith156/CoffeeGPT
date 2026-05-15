@@ -1,7 +1,7 @@
 """
 tests/test_rag_pipeline.py
 ===========================
-Task 4 — RAG pipeline contract tests.
+RAG pipeline contract tests.
 
 Tests:
   - Insert 3 known docs into in-memory Qdrant
@@ -9,10 +9,13 @@ Tests:
   - Query "robusta Vietnam harvest" → assert doc #2 ranks first
   - Assert source_url metadata is preserved in retrieval results
   - Assert retrieval returns at most top_k results
+
+Fix applied:
+  - qdrant-client >= 1.7 removed .search() → replaced with .query_points()
+    which returns a QueryResponse with .points list[ScoredPoint]
 """
 from __future__ import annotations
 from typing import Any
-
 
 import numpy as np
 import pytest
@@ -27,6 +30,27 @@ def _make_vec(seed: int, dim: int = 384) -> list[float]:
     rng = np.random.default_rng(seed)
     v = rng.random(dim).astype(np.float32)
     return (v / np.linalg.norm(v)).tolist()
+
+
+def _search(client: QdrantClient, collection: str, vector: list[float], limit: int):
+    """
+    Adapter that works with both old qdrant-client (≤1.6, has .search()) and
+    new qdrant-client (≥1.7, uses .query_points()).
+    Returns a list of ScoredPoint-like objects with .id, .score, .payload.
+    """
+    if hasattr(client, "query_points"):
+        response = client.query_points(
+            collection_name=collection,
+            query=vector,
+            limit=limit,
+        )
+        return response.points
+    # Fallback for older API
+    return client.search(  # type: ignore[attr-defined]
+        collection_name=collection,
+        query_vector=vector,
+        limit=limit,
+    )
 
 
 DOCS: list[dict[str, Any]] = [
@@ -88,12 +112,8 @@ def test_qdrant_has_correct_count(qdrant_with_docs: QdrantClient):
 
 def test_retrieval_returns_source_metadata(qdrant_with_docs: QdrantClient):
     """Every retrieved result must carry source_url in its payload."""
-    query_vec = _make_vec(seed=1)  # Similar to doc #1
-    results = qdrant_with_docs.search(
-        collection_name=COLLECTION,
-        query_vector=query_vec,
-        limit=3,
-    )
+    query_vec = _make_vec(seed=1)
+    results   = _search(qdrant_with_docs, COLLECTION, query_vec, limit=3)
     assert len(results) > 0
     for hit in results:
         assert "source_url" in hit.payload, f"Missing source_url in payload: {hit.payload}"
@@ -106,26 +126,17 @@ def test_retrieval_ranked_arabica_first(qdrant_with_docs: QdrantClient):
     Cosine similarity of a vector against itself = 1.0.
     """
     query_vec = _make_vec(seed=1)
-    results = qdrant_with_docs.search(
-        collection_name=COLLECTION,
-        query_vector=query_vec,
-        limit=3,
-    )
+    results   = _search(qdrant_with_docs, COLLECTION, query_vec, limit=3)
     assert results[0].id == 1, (
         f"Expected doc #1 (arabica) to rank first, got doc #{results[0].id}"
     )
-    # Score for exact match should be very close to 1.0
     assert results[0].score > 0.99
 
 
 def test_retrieval_ranked_robusta_first(qdrant_with_docs: QdrantClient):
     """Query with the robusta doc's own vector → doc #2 must rank highest."""
     query_vec = _make_vec(seed=2)
-    results = qdrant_with_docs.search(
-        collection_name=COLLECTION,
-        query_vector=query_vec,
-        limit=3,
-    )
+    results   = _search(qdrant_with_docs, COLLECTION, query_vec, limit=3)
     assert results[0].id == 2, (
         f"Expected doc #2 (robusta) to rank first, got doc #{results[0].id}"
     )
@@ -134,22 +145,14 @@ def test_retrieval_ranked_robusta_first(qdrant_with_docs: QdrantClient):
 def test_retrieval_respects_top_k_limit(qdrant_with_docs: QdrantClient):
     """Retrieval with top_k=2 must return at most 2 results."""
     query_vec = _make_vec(seed=10)
-    results = qdrant_with_docs.search(
-        collection_name=COLLECTION,
-        query_vector=query_vec,
-        limit=2,
-    )
+    results   = _search(qdrant_with_docs, COLLECTION, query_vec, limit=2)
     assert len(results) <= 2
 
 
 def test_retrieval_scores_are_normalised(qdrant_with_docs: QdrantClient):
     """All cosine similarity scores must be in [-1, 1]."""
     query_vec = _make_vec(seed=99)
-    results = qdrant_with_docs.search(
-        collection_name=COLLECTION,
-        query_vector=query_vec,
-        limit=3,
-    )
+    results   = _search(qdrant_with_docs, COLLECTION, query_vec, limit=3)
     for hit in results:
         assert -1.0 <= hit.score <= 1.0, f"Score out of range: {hit.score}"
 
@@ -157,10 +160,6 @@ def test_retrieval_scores_are_normalised(qdrant_with_docs: QdrantClient):
 def test_payload_title_preserved(qdrant_with_docs: QdrantClient):
     """The 'title' field must survive the round-trip through Qdrant."""
     query_vec = _make_vec(seed=3)
-    results = qdrant_with_docs.search(
-        collection_name=COLLECTION,
-        query_vector=query_vec,
-        limit=1,
-    )
+    results   = _search(qdrant_with_docs, COLLECTION, query_vec, limit=1)
     assert "title" in results[0].payload
     assert len(results[0].payload["title"]) > 0
