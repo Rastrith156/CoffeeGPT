@@ -94,6 +94,36 @@ class Settings(BaseSettings):
     redis_price_ttl_seconds: int = Field(default=60, alias="REDIS_PRICE_TTL_SECONDS")
     redis_alert_ttl_seconds: int = Field(default=300, alias="REDIS_ALERT_TTL_SECONDS")
 
+    # ── Stream provider URLs (all external endpoints in one place) ───────────
+    barchart_quote_url: str = Field(
+        default="https://ondemand.websol.barchart.com/getQuote.json",
+        alias="BARCHART_QUOTE_URL",
+    )
+    barchart_overview_url: str = Field(
+        default="https://www.barchart.com/futures/quotes/RM*0/overview",
+        alias="BARCHART_OVERVIEW_URL",
+    )
+    barchart_arabica_symbols: str = Field(default="KCY00,KC*1", alias="BARCHART_ARABICA_SYMBOLS")
+    stream_user_agent: str = Field(
+        default="Mozilla/5.0 (compatible; CoffeeGPT-Stream/1.0)",
+        alias="STREAM_USER_AGENT",
+    )
+
+    # ── Exponential backoff & circuit breaker ────────────────────────────────
+    stream_backoff_base_seconds: float = Field(default=5.0, alias="STREAM_BACKOFF_BASE_SECONDS")
+    stream_backoff_max_seconds: float = Field(default=300.0, alias="STREAM_BACKOFF_MAX_SECONDS")
+    stream_circuit_breaker_threshold: int = Field(default=5, alias="STREAM_CIRCUIT_BREAKER_THRESHOLD")
+    stream_degraded_interval_seconds: int = Field(default=120, alias="STREAM_DEGRADED_INTERVAL_SECONDS")
+
+    # ── Stream health & freshness ────────────────────────────────────────────
+    stream_stale_threshold_seconds: int = Field(default=90, alias="STREAM_STALE_THRESHOLD_SECONDS")
+    stream_health_report_interval_seconds: int = Field(default=30, alias="STREAM_HEALTH_REPORT_INTERVAL_SECONDS")
+
+    # ── Hot-state snapshot persistence ───────────────────────────────────────
+    snapshot_interval_seconds: int = Field(default=300, alias="SNAPSHOT_INTERVAL_SECONDS")  # 5 min
+    snapshot_retention_days: int = Field(default=30, alias="SNAPSHOT_RETENTION_DAYS")
+
+
     # ── Security & Auth (Task 3) ──────────────────────────────────────────────
     api_keys: list[str] = Field(default_factory=list, alias="API_KEYS")
     auth_enabled: bool = Field(default=True, alias="AUTH_ENABLED")

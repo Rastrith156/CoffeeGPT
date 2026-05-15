@@ -30,7 +30,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
-from core.logger import logger
+from core.logger import logger, bind_context
 from core.config import settings
 from streaming.redis_cache import RedisMarketCache
 
@@ -75,29 +75,91 @@ class MarketMonitor:
     Autonomous market monitor — reads Redis hot cache, evaluates signals,
     writes risk scores and alerts back to Redis.
 
+    Resilience: exponential backoff on consecutive errors + circuit breaker.
+    Heartbeat: last_successful_tick tracked and written to Redis.
+
     Start as an asyncio.Task via  start().
     """
 
     def __init__(self, cache: RedisMarketCache | None = None) -> None:
         self._cache   = cache or RedisMarketCache()
         self._running = False
-        # Deduplication state: last change_pct for which we fired a spike alert
+        self._log     = bind_context(stream_id="market_monitor")
+        # Deduplication: last change_pct for which we fired a spike alert
         self._last_alert_pct: dict[str, float] = {}
+        # Resilience state
+        self._consecutive_failures: int          = 0
+        self._total_failures: int                = 0
+        self._total_ticks: int                   = 0
+        self._last_successful_tick: datetime | None = None
+        self._degraded: bool                     = False
 
     async def start(self) -> None:
         self._running = True
-        logger.info("MarketMonitor started (interval={}s)", settings.monitor_interval_seconds)
+        self._log.info(
+            "MarketMonitor started | interval={}s cb_threshold={}",
+            settings.monitor_interval_seconds,
+            settings.stream_circuit_breaker_threshold,
+        )
         while self._running:
             try:
                 await self._run_tick()
+                self._consecutive_failures = 0
+                if self._degraded:
+                    self._degraded = False
+                    self._log.info("MarketMonitor recovered from degraded mode")
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.warning("MarketMonitor tick error: {}", exc)
-            await asyncio.sleep(settings.monitor_interval_seconds)
+                await self._on_tick_error(exc)
+                continue
+
+            sleep = (
+                float(settings.stream_degraded_interval_seconds)
+                if self._degraded
+                else float(settings.monitor_interval_seconds)
+            )
+            await asyncio.sleep(sleep)
 
     async def stop(self) -> None:
         self._running = False
+
+    # ─── Resilience helpers ────────────────────────────────────────────────────────
+
+    async def _on_tick_error(self, exc: Exception) -> None:
+        self._consecutive_failures += 1
+        self._total_failures += 1
+        cb = settings.stream_circuit_breaker_threshold
+        self._log.warning(
+            "MarketMonitor tick error (consecutive={}/{}) | {}",
+            self._consecutive_failures, cb, exc,
+        )
+        if self._consecutive_failures >= cb and not self._degraded:
+            self._degraded = True
+            self._log.error(
+                "MarketMonitor circuit breaker tripped. Entering degraded mode."
+            )
+        backoff = min(
+            settings.stream_backoff_base_seconds * (2 ** min(self._consecutive_failures - 1, 8)),
+            settings.stream_backoff_max_seconds,
+        )
+        await asyncio.sleep(backoff)
+
+    @property
+    def health(self) -> dict[str, Any]:
+        """Snapshot of this monitor’s resilience state."""
+        return {
+            "stream_id":            "market_monitor",
+            "running":              self._running,
+            "degraded":             self._degraded,
+            "consecutive_failures": self._consecutive_failures,
+            "total_ticks":          self._total_ticks,
+            "total_failures":       self._total_failures,
+            "last_successful_tick": (
+                self._last_successful_tick.isoformat()
+                if self._last_successful_tick else None
+            ),
+        }
 
     # ─── Public tick (tests call this directly) ──────────────────────────────
 
@@ -224,7 +286,10 @@ class MarketMonitor:
         except Exception as exc:
             logger.warning("MarketMonitor: risk state push failed: {}", exc)
 
-        logger.debug(
+        # ── Heartbeat ────────────────────────────────────────────────────────
+        self._last_successful_tick = datetime.now(timezone.utc)
+        self._total_ticks += 1
+        self._log.debug(
             "MarketMonitor | risk={:.0f} ({}) arabica={:.2f}% robusta={:.2f}%",
             risk_score, risk_level, a_change, r_change,
         )

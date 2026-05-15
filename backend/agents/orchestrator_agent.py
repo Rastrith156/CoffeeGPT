@@ -1,16 +1,23 @@
 """
 agents/orchestrator_agent.py
 ==============================
-STEP 1 (Autonomous Phase) — Orchestrator Agent
+Thin orchestrator — coordinates intent classification, agent dispatch,
+and response synthesis.
 
-The orchestrator decides which specialized agents to invoke,
-collects their outputs, and synthesises a final coherent response.
+This file is intentionally SLIM (~130 lines).
+All routing logic lives in  agents/routing/:
+  • IntentRouter   — which agents to invoke given a set of intents
+  • ToolSelector   — whether to use fast-path / agents / RAG
 
-Intent routing now uses the embedding-based IntentClassifier (Task 1)
-instead of brittle keyword matching. Prototype vectors are pre-warmed
-in Redis at startup — classify() runs in < 2 ms per query.
+ADDING NEW AGENTS:
+  1. Add the agent to __init__ and pass it in from core/runtime.py
+  2. Add the agent's trigger intents to agents/routing/intent_router.py
+  3. No changes needed here.
 
-Fallback: if no intent scores >= 0.35 → routes to "general" (RAG-only).
+ADDING NEW ROUTING LOGIC:
+  1. Edit agents/routing/tool_selector.py (decision tree)
+  2. Or agents/routing/intent_router.py (dispatch table)
+  3. No changes needed here.
 """
 from __future__ import annotations
 
@@ -18,8 +25,10 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
-from core.logger import logger
+from core.logger import logger, bind_context
 from agents.intent_classifier import IntentClassifier
+from agents.routing.intent_router import IntentRouter
+from agents.routing.tool_selector import ToolSelector
 from streaming.redis_cache import RedisMarketCache
 
 
@@ -28,10 +37,12 @@ class OrchestratorAgent:
     Intelligent orchestrator — routes queries to specialized agents,
     merges intelligence layers, and composes actionable responses.
 
-    HOT LAYER (Redis) is consulted FIRST for real-time questions.
-    COLD LAYER (RAG/Qdrant) is used for depth and historical context.
+    HOT LAYER (Redis) → fast-path for live-price queries.
+    Agent layer       → parallel specialized agent calls.
+    COLD LAYER (RAG)  → depth and historical context from Qdrant.
 
-    Intent routing is performed by IntentClassifier (embedding cosine-similarity).
+    Intent routing: IntentRouter (dispatch table)
+    Tool selection: ToolSelector (fast-path vs agents vs RAG vs hybrid)
     """
 
     def __init__(
@@ -45,57 +56,58 @@ class OrchestratorAgent:
         weather_agent=None,
         intent_classifier: IntentClassifier | None = None,
     ) -> None:
-        self._cache          = cache or RedisMarketCache()
-        self._futures_agent  = futures_agent
-        self._risk_agent     = risk_agent
-        self._alert_agent    = alert_agent
-        self._forecast_agent = forecast_agent
-        self._chatbot_agent  = chatbot_agent
-        self._weather_agent  = weather_agent
-        # Use provided classifier or shared singleton (warm-up must have run)
-        self._classifier: IntentClassifier = intent_classifier or IntentClassifier.instance()
+        self._cache         = cache or RedisMarketCache()
+        self._chatbot_agent = chatbot_agent
+        self._classifier    = intent_classifier or IntentClassifier.instance()
+        self._log           = bind_context(stream_id="orchestrator")
 
-    # ─── Public interface ────────────────────────────────────────────────────
+        # Build agent registry for router
+        _agents = {
+            "futures":  futures_agent,
+            "risk":     risk_agent,
+            "alert":    alert_agent,
+            "forecast": forecast_agent,
+            "weather":  weather_agent,
+        }
+        self._router   = IntentRouter(agents={k: v for k, v in _agents.items() if v is not None})
+        self._selector = ToolSelector()
+
+    # ── Public interface ──────────────────────────────────────────────────────
 
     async def answer(self, question: str, session_id: str, use_rag: bool = True) -> dict:
-        """
-        Main entry point — orchestrates agents and returns structured response.
-        """
+        """Main entry point — orchestrates agents and returns structured response."""
         intent = await self._classify_intent(question)
-        logger.info("OrchestratorAgent | intent={} question={!r:.60}", intent, question)
+        self._log.info("OrchestratorAgent | intent={} q={!r:.60}", intent, question)
 
-        # ── Live price fast-path ─────────────────────────────────────────────
-        if "live_price" in intent and not any(k in intent for k in ("risk", "forecast")):
+        plan = self._selector.select(
+            question=question,
+            intents=intent,
+            use_rag=use_rag,
+            has_chatbot=self._chatbot_agent is not None,
+        )
+
+        # ── Fast path ────────────────────────────────────────────────────────
+        if plan.use_fast_path:
             live_answer = await self._live_price_answer(question)
             if live_answer:
                 return live_answer
 
-        # ── Gather relevant agent outputs in parallel ────────────────────────
-        tasks: dict[str, asyncio.Task] = {}
-        if self._futures_agent and ("live_price" in intent or "risk" in intent or "forecast" in intent):
-            tasks["futures"] = asyncio.create_task(self._futures_agent.analyze(question))
-        if self._risk_agent and ("risk" in intent or "alert" in intent):
-            tasks["risk"] = asyncio.create_task(self._risk_agent.analyze(question))
-        if self._alert_agent and ("alert" in intent or "risk" in intent):
-            tasks["alert"] = asyncio.create_task(self._alert_agent.analyze(question))
-        if self._forecast_agent and ("forecast" in intent or "risk" in intent):
-            tasks["forecast"] = asyncio.create_task(self._forecast_agent.analyze(question))
-        if self._weather_agent and "weather" in intent:
-            tasks["weather"] = asyncio.create_task(self._weather_agent.analyze(question))
-        # General intent — chatbot-only, already handled in RAG layer below
-
+        # ── Agent dispatch ───────────────────────────────────────────────────
         agent_results: dict[str, Any] = {}
-        if tasks:
-            done = await asyncio.gather(*tasks.values(), return_exceptions=True)
-            for key, result in zip(tasks.keys(), done):
-                if isinstance(result, Exception):
-                    logger.warning("OrchestratorAgent: {} agent error: {}", key, result)
-                else:
-                    agent_results[key] = result
+        if plan.use_agents:
+            tasks_list = self._router.route(intent)
+            if tasks_list:
+                coros = [getattr(t.agent, t.method)(question) for t in tasks_list]
+                done  = await asyncio.gather(*coros, return_exceptions=True)
+                for task, result in zip(tasks_list, done):
+                    if isinstance(result, Exception):
+                        self._log.warning("Agent {} error: {}", task.name, result)
+                    else:
+                        agent_results[task.name] = result
 
-        # ── RAG / LLM layer ─────────────────────────────────────────────────
+        # ── RAG / LLM layer ──────────────────────────────────────────────────
         rag_response = None
-        if use_rag and self._chatbot_agent:
+        if plan.use_rag and self._chatbot_agent:
             try:
                 rag_response = await self._chatbot_agent.answer(
                     question=question,
@@ -103,31 +115,18 @@ class OrchestratorAgent:
                     use_rag=use_rag,
                 )
             except Exception as exc:
-                logger.warning("OrchestratorAgent: RAG layer error: {}", exc)
+                self._log.warning("RAG layer error: {}", exc)
 
-        # ── Synthesise final response ────────────────────────────────────────
-        return self._synthesise(
-            question=question,
-            intent=intent,
-            agent_results=agent_results,
-            rag_response=rag_response,
-            session_id=session_id,
-        )
+        return self._synthesise(question, intent, agent_results, rag_response, session_id)
 
-    # ─── Intent classification (Task 1) ──────────────────────────────────────
+    # ── Intent classification ─────────────────────────────────────────────────
 
     async def _classify_intent(self, question: str) -> list[str]:
-        """
-        Embed query and compare against Redis-cached prototype vectors.
-        Runs inference in a thread-pool executor to avoid blocking event loop.
-        Falls back to ["general"] if similarity < 0.35 for all intents.
-        """
         return await self._classifier.classify_async(question)
 
-    # ─── Live price fast-path ────────────────────────────────────────────────
+    # ── Live price fast-path ──────────────────────────────────────────────────
 
     async def _live_price_answer(self, question: str) -> dict | None:
-        """Short-circuit to Redis data for pure live-price queries."""
         snapshot = await self._cache.get_live_snapshot()
         arabica  = snapshot.get("arabica")
         robusta  = snapshot.get("robusta")
@@ -135,9 +134,9 @@ class OrchestratorAgent:
             return None
 
         a_price  = float((arabica or {}).get("arabica_price") or 0)
-        r_price  = float((robusta or {}).get("robusta_price") or 0)
+        r_price  = float((robusta  or {}).get("robusta_price") or 0)
         a_change = float((arabica or {}).get("change_percent") or 0)
-        r_change = float((robusta or {}).get("change_percent") or 0)
+        r_change = float((robusta  or {}).get("change_percent") or 0)
         updated  = (arabica or robusta or {}).get("updated_at", "")
 
         parts = []
@@ -153,76 +152,53 @@ class OrchestratorAgent:
             + "\n".join(f"• {p}" for p in parts)
             + (f"\n\n_Last updated: {updated}_" if updated else "")
         )
-
         return {
-            "answer": answer,
-            "sources": [],
-            "session_id": "",
-            "model": "redis_hot_cache",
-            "provider": "streaming_layer",
+            "answer":         answer,
+            "sources":        [],
+            "session_id":     "",
+            "model":          "redis_hot_cache",
+            "provider":       "streaming_layer",
             "retrieval_mode": "live_redis",
-            "agents_used": ["futures_hot_cache"],
-            "live_data": snapshot,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "agents_used":    ["futures_hot_cache"],
+            "live_data":      snapshot,
+            "generated_at":   datetime.now(timezone.utc).isoformat(),
         }
 
-    # ─── Synthesis ───────────────────────────────────────────────────────────
+    # ── Response synthesis ────────────────────────────────────────────────────
 
     def _synthesise(
         self,
         question: str,
         intent: list[str],
         agent_results: dict,
-        rag_response,
+        rag_response: Any,
         session_id: str,
     ) -> dict:
-        intelligence_blocks: list[str] = []
+        blocks: list[str] = []
+        _icons = {"futures": "📈", "risk": "🎯", "alert": "🔔", "forecast": "🔭", "weather": "🌦"}
 
-        if "futures" in agent_results:
-            fut = agent_results["futures"]
-            if fut.get("summary"):
-                intelligence_blocks.append(f"📈 **Futures**: {fut['summary']}")
+        for key, icon in _icons.items():
+            if key in agent_results:
+                summary = agent_results[key].get("summary", "")
+                label   = key.title()
+                if summary:
+                    blocks.append(f"{icon} **{label}**: {summary}")
 
-        if "risk" in agent_results:
-            risk = agent_results["risk"]
-            if risk.get("summary"):
-                intelligence_blocks.append(f"🎯 **Risk**: {risk['summary']}")
-
-        if "alert" in agent_results:
-            alrt = agent_results["alert"]
-            if alrt.get("summary"):
-                intelligence_blocks.append(f"🔔 **Alerts**: {alrt['summary']}")
-
-        if "forecast" in agent_results:
-            fcast = agent_results["forecast"]
-            if fcast.get("summary"):
-                intelligence_blocks.append(f"🔭 **Outlook**: {fcast['summary']}")
-
-        if "weather" in agent_results:
-            w = agent_results["weather"]
-            if w.get("summary"):
-                intelligence_blocks.append(f"🌦 **Weather**: {w['summary']}")
-
-        rag_text  = ""
-        rag_sources: list[Any] = []
-        rag_model = ""
+        rag_text: str     = ""
+        rag_sources: list = []
+        rag_model: str    = ""
         if rag_response is not None:
             try:
-                rag_text    = rag_response.answer if hasattr(rag_response, "answer") else str(rag_response)
+                rag_text    = rag_response.answer  if hasattr(rag_response, "answer")  else str(rag_response)
                 rag_sources = rag_response.sources if hasattr(rag_response, "sources") else []
-                rag_model   = rag_response.model   if hasattr(rag_response, "model") else ""
+                rag_model   = rag_response.model   if hasattr(rag_response, "model")   else ""
             except Exception as exc:
-                logger.warning("Failed to extract rag_response attributes: {}", exc)
-                rag_text = ""
+                self._log.warning("Failed to extract rag_response attributes: {}", exc)
 
-        if intelligence_blocks and rag_text:
-            answer = (
-                "\n".join(intelligence_blocks)
-                + "\n\n---\n\n**Intelligence Analysis:**\n\n"
-                + rag_text
-            )
-        elif intelligence_blocks:
-            answer = "\n".join(intelligence_blocks)
+        if blocks and rag_text:
+            answer = "\n".join(blocks) + "\n\n---\n\n**Intelligence Analysis:**\n\n" + rag_text
+        elif blocks:
+            answer = "\n".join(blocks)
         elif rag_text:
             answer = rag_text
         else:
@@ -232,13 +208,13 @@ class OrchestratorAgent:
             )
 
         return {
-            "answer": answer,
-            "sources": rag_sources,
-            "session_id": session_id,
-            "model": rag_model or "orchestrator",
-            "provider": "orchestrator_agent",
+            "answer":         answer,
+            "sources":        rag_sources,
+            "session_id":     session_id,
+            "model":          rag_model or "orchestrator",
+            "provider":       "orchestrator_agent",
             "retrieval_mode": "orchestrated",
-            "intent": intent,
-            "agents_used": list(agent_results.keys()) + (["rag"] if rag_text else []),
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "intent":         intent,
+            "agents_used":    list(agent_results.keys()) + (["rag"] if rag_text else []),
+            "generated_at":   datetime.now(timezone.utc).isoformat(),
         }
