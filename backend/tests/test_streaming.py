@@ -197,16 +197,17 @@ async def test_robusta_spike_also_triggers_alert():
 @pytest.mark.asyncio
 async def test_no_crash_when_redis_unavailable():
     """
-    If Redis cache methods raise ConnectionError, the monitor must
+    If Redis cache methods raise RedisError, the monitor must
     swallow the error and complete the tick without re-raising.
     """
     from streaming.market_monitor import MarketMonitor
+    from core.errors import RedisError
 
     cache = _make_cache(arabica_price=220.00)
     # Make push_alert raise — monitor must catch this internally
-    cache.push_alert  = AsyncMock(side_effect=ConnectionError("Redis gone"))
-    cache.push_spike  = AsyncMock(side_effect=ConnectionError("Redis gone"))
-    cache.set_json    = AsyncMock(side_effect=ConnectionError("Redis gone"))
+    cache.push_alert  = AsyncMock(side_effect=RedisError("Redis gone"))
+    cache.push_spike  = AsyncMock(side_effect=RedisError("Redis gone"))
+    cache.set_json    = AsyncMock(side_effect=RedisError("Redis gone"))
 
     monitor = MarketMonitor(cache=cache)
 
@@ -220,8 +221,8 @@ async def test_no_crash_when_redis_unavailable():
     ):
         try:
             await monitor._run_tick()
-        except ConnectionError:
-            pytest.fail("MarketMonitor must not propagate Redis connection errors")
+        except RedisError:
+            pytest.fail("MarketMonitor must not propagate Redis errors")
 
 
 @pytest.mark.asyncio

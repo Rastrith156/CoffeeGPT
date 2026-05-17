@@ -3,31 +3,24 @@ streaming/futures_stream.py
 ===========================
 STEP 2 — Live Futures Stream Service (Orchestrator)
 
-This module is now a SLIM ORCHESTRATOR.
+ISSUE #5 FIX: StreamHealthTracker is now wired into this service.
+  - record_success() called after every clean tick (with latency_ms)
+  - record_failure() called on every error
+  - set_degraded() called when circuit breaker trips or recovers
 
-Responsibility delegation:
+This file is intentionally SLIM: full responsibility delegation:
   Fetch         →  streaming/providers/barchart_provider.py
   Normalise     →  streaming/normalizer.py
   Cache write   →  streaming/redis_cache.py
   Spike detect  →  streaming/market_monitor.py (MarketMonitor)
   Health track  →  streaming/stream_health.py (StreamHealthTracker)
 
-Resilience features (Issue 1):
+Resilience features:
   ✅ Exponential backoff on consecutive failures
-  ✅ Circuit breaker: after N failures → degraded mode (longer sleep)
+  ✅ Circuit breaker: after N failures → degraded mode
   ✅ last_successful_tick heartbeat written to Redis on every success
-  ✅ Per-feed failure tracking (arabica vs robusta tracked independently)
-
-Architecture:
-    BarchartProvider.fetch_arabica/robusta()
-           ↓
-    TickNormalizer.normalize()
-           ↓
-    RedisMarketCache.update_arabica/robusta()
-           ↓
-    StreamHealthTracker.record_success/failure()
-           ↓
-    EventBus.publish() (optional — non-blocking)
+  ✅ Per-feed failure tracking (arabica vs robusta independently)
+  ✅ StreamHealthTracker integration (latency, stale, reconnect)
 """
 from __future__ import annotations
 
@@ -36,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core.config import settings
+from core.errors import StreamingError, RedisError
 from core.logger import bind_context
 from streaming.providers.barchart_provider import BarchartProvider
 from streaming.normalizer import TickNormalizer
@@ -51,6 +45,13 @@ class FuturesStreamService:
 
     Call  start()  as an asyncio.Task from the runtime container.
     Spike detection is handled by MarketMonitor which reads Redis independently.
+
+    Args:
+        cache:          RedisMarketCache instance (optional).
+        provider:       BarchartProvider instance (optional).
+        normalizer:     TickNormalizer instance (optional).
+        health_tracker: StreamHealthTracker instance (optional).
+                        When provided, every tick records success/failure/latency.
     """
 
     def __init__(
@@ -58,19 +59,21 @@ class FuturesStreamService:
         cache: RedisMarketCache | None = None,
         provider: BarchartProvider | None = None,
         normalizer: TickNormalizer | None = None,
+        health_tracker=None,          # StreamHealthTracker | None
     ) -> None:
-        self._cache      = cache or RedisMarketCache()
-        self._provider   = provider or BarchartProvider()
-        self._normalizer = normalizer or TickNormalizer()
-        self._running    = False
-        self._log        = bind_context(stream_id=_STREAM_ID)
+        self._cache          = cache      or RedisMarketCache()
+        self._provider       = provider   or BarchartProvider()
+        self._normalizer     = normalizer or TickNormalizer()
+        self._health_tracker = health_tracker
+        self._running        = False
+        self._log            = bind_context(stream_id=_STREAM_ID)
 
         # ── Resilience state ─────────────────────────────────────────────────
-        self._consecutive_failures: int  = 0
-        self._total_failures: int        = 0
-        self._total_ticks: int           = 0
+        self._consecutive_failures: int       = 0
+        self._total_failures: int             = 0
+        self._total_ticks: int                = 0
         self._last_successful_tick: datetime | None = None
-        self._degraded: bool             = False
+        self._degraded: bool                  = False
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -87,9 +90,16 @@ class FuturesStreamService:
             try:
                 await self._tick()
             except asyncio.CancelledError:
+                self._log.info("FuturesStreamService cancelled — shutting down")
                 break
-            except Exception as exc:
+            except (StreamingError, RedisError) as exc:
                 await self._on_tick_error(exc)
+                continue
+            except Exception as exc:
+                # Catch-all: wrap unknown errors and treat as streaming errors
+                await self._on_tick_error(
+                    StreamingError(f"Unexpected tick error: {exc}", context={"original": str(exc)})
+                )
                 continue
 
             sleep_interval = self._compute_sleep_interval()
@@ -98,18 +108,19 @@ class FuturesStreamService:
     async def stop(self) -> None:
         self._running = False
         await self._provider.close()
+        self._log.info("FuturesStreamService stopped")
 
     @property
     def health(self) -> dict[str, Any]:
         """Snapshot of this service's resilience state for health endpoints."""
         return {
-            "stream_id":              _STREAM_ID,
-            "running":                self._running,
-            "degraded":               self._degraded,
-            "consecutive_failures":   self._consecutive_failures,
-            "total_failures":         self._total_failures,
-            "total_ticks":            self._total_ticks,
-            "last_successful_tick":   (
+            "stream_id":            _STREAM_ID,
+            "running":              self._running,
+            "degraded":             self._degraded,
+            "consecutive_failures": self._consecutive_failures,
+            "total_failures":       self._total_failures,
+            "total_ticks":          self._total_ticks,
+            "last_successful_tick": (
                 self._last_successful_tick.isoformat()
                 if self._last_successful_tick else None
             ),
@@ -124,7 +135,7 @@ class FuturesStreamService:
           2. Normalise each tick
           3. Write to Redis hot cache
           4. Update market state + volatility
-          5. Record heartbeat
+          5. Record heartbeat & update StreamHealthTracker
         """
         tick_start = datetime.now(timezone.utc)
 
@@ -167,15 +178,23 @@ class FuturesStreamService:
                 if isinstance(res, Exception):
                     self._log.warning("Redis write error during tick: {}", res)
 
-        # Record heartbeat
+        # ── Heartbeat & health tracking ───────────────────────────────────────
         self._last_successful_tick = tick_start
         self._consecutive_failures = 0
         self._total_ticks += 1
-        if self._degraded:
-            self._degraded = False
-            self._log.info("FuturesStreamService recovered from degraded mode")
 
         elapsed_ms = (datetime.now(timezone.utc) - tick_start).total_seconds() * 1000
+
+        if self._degraded:
+            self._degraded = False
+            if self._health_tracker is not None:
+                self._health_tracker.set_degraded(_STREAM_ID, False)
+            self._log.info("FuturesStreamService recovered from degraded mode")
+
+        # Record success in health tracker
+        if self._health_tracker is not None:
+            self._health_tracker.record_success(_STREAM_ID, latency_ms=elapsed_ms)
+
         self._log.debug(
             "FuturesStream tick | arabica={} robusta={} elapsed={:.0f}ms",
             arabica and arabica.price,
@@ -183,13 +202,13 @@ class FuturesStreamService:
             elapsed_ms,
         )
 
-        # Persist heartbeat to Redis for health monitoring
+        # Write heartbeat to Redis
         await self._write_heartbeat(tick_start, elapsed_ms)
 
     # ── Resilience ────────────────────────────────────────────────────────────
 
     async def _on_tick_error(self, exc: Exception) -> None:
-        """Track failure, trigger circuit breaker, sleep with backoff."""
+        """Track failure, update health tracker, trigger circuit breaker, sleep with backoff."""
         self._consecutive_failures += 1
         self._total_failures += 1
         cb_threshold = settings.stream_circuit_breaker_threshold
@@ -199,8 +218,15 @@ class FuturesStreamService:
             self._consecutive_failures, cb_threshold, exc,
         )
 
+        # Record failure in health tracker
+        if self._health_tracker is not None:
+            self._health_tracker.record_failure(_STREAM_ID)
+
         if self._consecutive_failures >= cb_threshold and not self._degraded:
             self._degraded = True
+            if self._health_tracker is not None:
+                self._health_tracker.set_degraded(_STREAM_ID, True)
+                self._health_tracker.record_reconnect(_STREAM_ID)
             self._log.error(
                 "FuturesStreamService circuit breaker tripped ({}+ failures). "
                 "Entering degraded mode — polling at {}s intervals.",
@@ -212,13 +238,10 @@ class FuturesStreamService:
         await asyncio.sleep(backoff)
 
     def _compute_backoff(self) -> float:
-        """
-        Exponential backoff: base × 2^failures, capped at max.
-        Capped independently of degraded mode.
-        """
-        base = settings.stream_backoff_base_seconds
+        """Exponential backoff: base × 2^failures, capped at max."""
+        base    = settings.stream_backoff_base_seconds
         maximum = settings.stream_backoff_max_seconds
-        delay = base * (2 ** min(self._consecutive_failures - 1, 8))
+        delay   = base * (2 ** min(self._consecutive_failures - 1, 8))
         return min(delay, maximum)
 
     def _compute_sleep_interval(self) -> float:
@@ -250,7 +273,7 @@ class FuturesStreamService:
 
     # ── Market state composer ─────────────────────────────────────────────────
 
-    def _build_market_state(self, arabica, robusta) -> dict[str, Any]:
+    def _build_market_state(self, arabica: Any, robusta: Any) -> dict[str, Any]:
         from streaming.normalizer import NormalisedTick  # local import avoids circular
         a: NormalisedTick | None = arabica
         r: NormalisedTick | None = robusta
@@ -263,22 +286,22 @@ class FuturesStreamService:
 
         sentiment = (
             "strongly_bullish" if avg >= 3.0
-            else "bullish"       if avg >= 1.0
+            else "bullish"         if avg >= 1.0
             else "strongly_bearish" if avg <= -3.0
-            else "bearish"       if avg <= -1.0
+            else "bearish"         if avg <= -1.0
             else "neutral"
         )
         return {
-            "arabica_price":       a_price,
-            "arabica_change_pct":  a_change,
-            "arabica_currency":    a.currency if a else "US cents/lb",
-            "robusta_price":       r_price,
-            "robusta_change_pct":  r_change,
-            "robusta_currency":    r.currency if r else "USD/tonne",
-            "market_sentiment":    sentiment,
-            "stream_sources":      list({
+            "arabica_price":     a_price,
+            "arabica_change_pct": a_change,
+            "arabica_currency":  a.currency if a else "US cents/lb",
+            "robusta_price":     r_price,
+            "robusta_change_pct": r_change,
+            "robusta_currency":  r.currency if r else "USD/tonne",
+            "market_sentiment":  sentiment,
+            "stream_sources":    list({
                 (a.source if a else "none"),
                 (r.source if r else "none"),
             }),
-            "updated_at":          datetime.now(timezone.utc).isoformat(),
+            "updated_at":        datetime.now(timezone.utc).isoformat(),
         }

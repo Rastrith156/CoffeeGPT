@@ -32,6 +32,7 @@ from typing import Any
 
 from core.logger import logger, bind_context
 from core.config import settings
+from core.errors import RedisError
 from streaming.redis_cache import RedisMarketCache
 
 # ─── Thresholds ────────────────────────────────────────────────────────────
@@ -81,8 +82,13 @@ class MarketMonitor:
     Start as an asyncio.Task via  start().
     """
 
-    def __init__(self, cache: RedisMarketCache | None = None) -> None:
+    def __init__(
+        self,
+        cache: RedisMarketCache | None = None,
+        health_tracker=None,
+    ) -> None:
         self._cache   = cache or RedisMarketCache()
+        self._health_tracker = health_tracker
         self._running = False
         self._log     = bind_context(stream_id="market_monitor")
         # Deduplication: last change_pct for which we fired a spike alert
@@ -107,6 +113,8 @@ class MarketMonitor:
                 self._consecutive_failures = 0
                 if self._degraded:
                     self._degraded = False
+                    if self._health_tracker is not None:
+                        self._health_tracker.set_degraded("market_monitor", False)
                     self._log.info("MarketMonitor recovered from degraded mode")
             except asyncio.CancelledError:
                 break
@@ -130,12 +138,26 @@ class MarketMonitor:
         self._consecutive_failures += 1
         self._total_failures += 1
         cb = settings.stream_circuit_breaker_threshold
-        self._log.warning(
-            "MarketMonitor tick error (consecutive={}/{}) | {}",
-            self._consecutive_failures, cb, exc,
-        )
+        
+        if isinstance(exc, asyncio.TimeoutError):
+            self._log.warning(
+                "MarketMonitor tick timeout (consecutive={}/{})",
+                self._consecutive_failures, cb,
+            )
+        else:
+            self._log.warning(
+                "MarketMonitor tick error (consecutive={}/{}) | {}",
+                self._consecutive_failures, cb, exc,
+            )
+            
+        if self._health_tracker is not None:
+            self._health_tracker.record_failure("market_monitor")
+
         if self._consecutive_failures >= cb and not self._degraded:
             self._degraded = True
+            if self._health_tracker is not None:
+                self._health_tracker.set_degraded("market_monitor", True)
+                self._health_tracker.record_reconnect("market_monitor")
             self._log.error(
                 "MarketMonitor circuit breaker tripped. Entering degraded mode."
             )
@@ -183,6 +205,7 @@ class MarketMonitor:
           3. Detect high-volatility regime
           4. Compute & persist risk score
         """
+        tick_start = datetime.now(timezone.utc)
         live = await self._fetch_live_prices()
 
         arabica_tick = live.get("arabica") or {}
@@ -228,7 +251,7 @@ class MarketMonitor:
                         await self._cache.push_spike(alert)
                         self._last_alert_pct[market] = change
                         logger.info("MarketMonitor spike alert | {}", alert["message"])
-                    except Exception as exc:
+                    except RedisError as exc:
                         logger.warning("MarketMonitor: failed to push alert: {}", exc)
 
         # ── Volatility regime alert ──────────────────────────────────────────
@@ -245,7 +268,7 @@ class MarketMonitor:
                         "message": f"📊 {market.title()} volatility elevated: {v:.2f}%",
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     })
-                except Exception as exc:
+                except RedisError as exc:
                     logger.warning("MarketMonitor: volatility alert push failed: {}", exc)
 
         # ── Risk score ───────────────────────────────────────────────────────
@@ -283,12 +306,17 @@ class MarketMonitor:
                     ),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
-        except Exception as exc:
+        except RedisError as exc:
             logger.warning("MarketMonitor: risk state push failed: {}", exc)
 
         # ── Heartbeat ────────────────────────────────────────────────────────
         self._last_successful_tick = datetime.now(timezone.utc)
         self._total_ticks += 1
+        elapsed_ms = (self._last_successful_tick - tick_start).total_seconds() * 1000
+        
+        if self._health_tracker is not None:
+            self._health_tracker.record_success("market_monitor", latency_ms=elapsed_ms)
+            
         self._log.debug(
             "MarketMonitor | risk={:.0f} ({}) arabica={:.2f}% robusta={:.2f}%",
             risk_score, risk_level, a_change, r_change,

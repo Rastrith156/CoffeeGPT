@@ -21,6 +21,7 @@ from typing import Any
 import redis.asyncio as aioredis
 
 from core.config import settings
+from core.errors import RedisError
 from core.logger import logger
 
 # ─── TTL constants ─────────────────────────────────────────────────────────
@@ -87,7 +88,7 @@ class RedisMarketCache:
         try:
             await client.setex(key, ttl, json.dumps(data, default=str))
             return True
-        except Exception as exc:
+        except RedisError as exc:
             logger.warning("RedisMarketCache.set_json error: {}", exc)
             return False
 
@@ -98,7 +99,7 @@ class RedisMarketCache:
         try:
             raw = await client.get(key)
             return json.loads(raw) if raw else None
-        except Exception as exc:
+        except RedisError as exc:
             logger.warning("RedisMarketCache.get_json error: {}", exc)
             return None
 
@@ -114,7 +115,7 @@ class RedisMarketCache:
             pipe.expire(key, ttl)
             await pipe.execute()
             return True
-        except Exception as exc:
+        except RedisError as exc:
             logger.warning("RedisMarketCache.push_list_json error: {}", exc)
             return False
 
@@ -125,7 +126,7 @@ class RedisMarketCache:
         try:
             items = await client.lrange(key, 0, count - 1)  # type: ignore[misc]
             return [json.loads(item) for item in items if item]
-        except Exception as exc:
+        except RedisError as exc:
             logger.warning("RedisMarketCache.get_list_json error: {}", exc)
             return []
 
@@ -135,7 +136,7 @@ class RedisMarketCache:
             return False
         try:
             return await client.ping()  # type: ignore[misc]
-        except Exception as exc:
+        except RedisError as exc:
             logger.warning("RedisMarketCache.is_healthy error: {}", exc)
             return False
 

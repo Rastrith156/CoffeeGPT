@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core.logger import bind_context
+from core.errors import LLMError, RetrievalError
 from agents.intent_classifier import IntentClassifier
 from agents.routing.intent_router import IntentRouter
 from agents.routing.tool_selector import ToolSelector
@@ -127,7 +128,7 @@ class OrchestratorAgent:
                     session_id=session_id,
                     use_rag=use_rag,
                 )
-            except Exception as exc:
+            except (LLMError, RetrievalError) as exc:
                 self._log.warning("RAG layer error: {}", exc)
 
         return self._synthesise(question, intent, agent_results, rag_response, session_id)
@@ -203,7 +204,7 @@ class OrchestratorAgent:
                 rag_text    = rag_response.answer  if hasattr(rag_response, "answer")  else str(rag_response)
                 rag_sources = rag_response.sources if hasattr(rag_response, "sources") else []
                 rag_model   = rag_response.model   if hasattr(rag_response, "model")   else ""
-            except Exception as exc:
+            except AttributeError as exc:
                 self._log.warning("Failed to extract rag_response attributes: {}", exc)
 
         if blocks and rag_text:
