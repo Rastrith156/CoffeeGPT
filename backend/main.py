@@ -109,13 +109,13 @@ def create_app() -> FastAPI:
         )
         schema.setdefault("components", {})
         schema["components"]["securitySchemes"] = {
-            "ApiKeyAuth": {
+            "APIKeyHeader": {
                 "type": "apiKey",
                 "in": "header",
                 "name": "X-API-Key",
                 "description": "Pass your CoffeeGPT API key via the X-API-Key header.",
             },
-            "BearerAuth": {
+            "HTTPBearer": {
                 "type": "http",
                 "scheme": "bearer",
                 "bearerFormat": "JWT",
@@ -124,8 +124,8 @@ def create_app() -> FastAPI:
         }
         # Apply both schemes globally so every operation shows the lock icon
         schema["security"] = [
-            {"ApiKeyAuth": []},
-            {"BearerAuth": []},
+            {"APIKeyHeader": []},
+            {"HTTPBearer": []},
         ]
         app.openapi_schema = schema
         return schema

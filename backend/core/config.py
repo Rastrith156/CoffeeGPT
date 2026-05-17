@@ -202,7 +202,7 @@ class Settings(BaseSettings):
         import logging as _logging
         _KNOWN_STANDARD_PREFIXES = (
             "gpt-", "claude-", "llama", "mistral", "gemma",
-            "phi-", "falcon", "qwen", "internlm",
+            "phi-", "falcon", "qwen", "internlm", "deepseek",
         )
         v_lower = v.lower()
         is_standard = any(v_lower.startswith(p) for p in _KNOWN_STANDARD_PREFIXES)

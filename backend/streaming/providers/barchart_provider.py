@@ -70,6 +70,9 @@ class BarchartProvider:
         Fetch the most liquid Arabica KC futures contract from Barchart.
         Returns RawTickData or None (production) / synthetic (dev).
         """
+        if not settings.barchart_api_key:
+            return self._synthetic_arabica()
+            
         client = await self._get_client()
         try:
             response = await client.get(

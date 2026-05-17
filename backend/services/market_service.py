@@ -151,6 +151,8 @@ class MarketService:
         return contracts
 
     async def _fetch_arabica_contract(self, client: httpx.AsyncClient) -> FuturesContract | None:
+        if not self.BARCHART_PUBLIC_API_KEY:
+            return None
         response = await client.get(
             self.BARCHART_QUOTE_URL,
             params={
@@ -240,7 +242,7 @@ class MarketService:
         )
 
     async def _fetch_barchart_history(self, client: httpx.AsyncClient, symbol: str) -> list[dict]:
-        if not symbol:
+        if not self.BARCHART_PUBLIC_API_KEY or not symbol:
             return []
         response = await client.get(
             self.BARCHART_HISTORY_URL,
