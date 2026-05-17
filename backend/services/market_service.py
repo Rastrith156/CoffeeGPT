@@ -12,6 +12,7 @@ import httpx
 
 from core.config import settings
 from core.logger import logger
+from core.cache import cached
 from models.schemas import (
     CommodityVariety,
     ExportRecord,
@@ -45,6 +46,7 @@ class MarketService:
         HistoryWindow.y1.value: 365,
     }
 
+    @cached("market:prices", ttl=300)
     async def get_prices(
         self,
         variety: CommodityVariety = CommodityVariety.arabica,
@@ -77,6 +79,7 @@ class MarketService:
             service_mode="synthetic_market_feed",
         )
 
+    @cached("market:futures", ttl=60)
     async def get_futures(self) -> MarketFuturesResponse:
         live_contracts = await self._live_futures_contracts()
         if live_contracts:
@@ -87,6 +90,7 @@ class MarketService:
             )
         return self._demo_futures_response()
 
+    @cached("market:exports", ttl=86400)
     async def get_exports(self, country: str | None = None) -> MarketExportsResponse:
         records = [
             ExportRecord(country_code="BRA", country="Brazil", volume_bags_60kg=41000000, value_usd_m=7800),

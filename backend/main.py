@@ -51,12 +51,8 @@ def create_app() -> FastAPI:
     )
 
     # Fix #16: register typed PlatformError handler so it returns clean JSON, not raw 500s
-    @app.exception_handler(PlatformError)
-    async def platform_error_handler(request: Request, exc: PlatformError):
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"error": exc.message, "context": exc.context},
-        )
+    from core.error_handlers import register_error_handlers
+    register_error_handlers(app)
 
     # Fix #15: TraceabilityMiddleware must be added before process-time header
     app.add_middleware(TraceabilityMiddleware)
@@ -76,6 +72,12 @@ def create_app() -> FastAPI:
         response.headers["X-Process-Time"] = f"{(perf_counter() - started_at) * 1000:.2f}ms"
         return response
 
+    from api import auth, chat, ingestion, live, websockets
+    api_router.include_router(auth.router)
+    api_router.include_router(live.router)
+    api_router.include_router(chat.router)
+    api_router.include_router(ingestion.router)
+    api_router.include_router(websockets.router)
     app.include_router(api_router, prefix=settings.api_prefix)
 
     # Fix #22: Prometheus /metrics endpoint — free observability in one line
@@ -84,6 +86,13 @@ def create_app() -> FastAPI:
         Instrumentator().instrument(app).expose(app)
     except ImportError:
         pass  # prometheus not installed — skip gracefully
+
+    # OpenTelemetry Tracing
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        FastAPIInstrumentor.instrument_app(app)
+    except ImportError:
+        pass
 
     @app.get("/", include_in_schema=False)
     async def root(request: Request):

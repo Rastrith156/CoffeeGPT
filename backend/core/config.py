@@ -174,7 +174,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_production_safety(self) -> "Settings":
-        """Crash early in production if critical configs are missing or insecure."""
+        """Crash early if critical configs are insecure."""
+        if self.secret_key == "change_me":
+            raise RuntimeError("FATAL: secret_key cannot be 'change_me'. Please set a secure SECRET_KEY in your environment.")
+
         if self.environment.lower() == "production":
             if "*" in self.cors_origins:
                 raise ValueError(

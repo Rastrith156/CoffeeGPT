@@ -11,6 +11,7 @@ from rag.store import CoffeeVectorStore
 
 from core.config import settings
 from core.logger import logger
+from rag.reranker import RerankerService
 
 RECENCY_KEYWORDS = (
     "today",
@@ -103,9 +104,11 @@ class CoffeeRetriever:
         self,
         embedder: EmbeddingService | None = None,
         vector_store: CoffeeVectorStore | None = None,
+        reranker: RerankerService | None = None,
     ) -> None:
         self.embedder = embedder or EmbeddingService()
         self.vector_store = vector_store or CoffeeVectorStore()
+        self.reranker = reranker or RerankerService()
 
     def available(self) -> bool:
         return self.vector_store.ensure_collection(self.embedder.dimension())
@@ -137,8 +140,14 @@ class CoffeeRetriever:
                     continue
                 payload["score"] = self._coerce_float(getattr(point, "score", 0.0))
                 documents.append(Document(page_content=page_content, metadata=payload))
-            reranked = self._rerank_documents(query, documents)
-            return self._diversify_documents(query, reranked, requested_limit)
+            
+            # Use ML reranker if configured, else fallback to heuristics
+            if self.reranker.provider != "local":
+                reranked = self.reranker.rerank(query, documents, requested_limit)
+                return reranked
+            else:
+                reranked = self._rerank_documents(query, documents)
+                return self._diversify_documents(query, reranked, requested_limit)
         except Exception as exc:
             logger.warning("Vector retrieval failed, returning no RAG context: {}", exc)
             return []

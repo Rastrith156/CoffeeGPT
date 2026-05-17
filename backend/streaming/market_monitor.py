@@ -27,6 +27,7 @@ Fixes applied:
 from __future__ import annotations
 
 import asyncio
+import random
 from datetime import datetime, timezone
 from typing import Any
 
@@ -127,7 +128,9 @@ class MarketMonitor:
                 if self._degraded
                 else float(settings.monitor_interval_seconds)
             )
-            await asyncio.sleep(sleep)
+            # Add jitter (+/- 20%) to avoid thundering herd
+            jitter = sleep * 0.2 * (random.random() * 2 - 1)
+            await asyncio.sleep(sleep + jitter)
 
     async def stop(self) -> None:
         self._running = False
@@ -213,6 +216,20 @@ class MarketMonitor:
 
         a_price, a_change = _extract_price_change(arabica_tick) if arabica_tick else (0.0, 0.0)
         r_price, r_change = _extract_price_change(robusta_tick) if robusta_tick else (0.0, 0.0)
+
+        # Stale data validation circuit breaker
+        a_ts_str = arabica_tick.get("timestamp") or arabica_tick.get("tradeTimestamp")
+        r_ts_str = robusta_tick.get("timestamp") or robusta_tick.get("tradeTime")
+        
+        for ts_str in (a_ts_str, r_ts_str):
+            if ts_str:
+                try:
+                    ts = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+                    if (tick_start - ts).total_seconds() > 3600:
+                        self._log.warning("Stale data detected (older than 1h), skipping tick to protect downstream")
+                        return
+                except ValueError:
+                    pass
 
         # Also fetch volatility from the hot-cache snapshot (not in live fetch)
         snapshot = await self._cache.get_live_snapshot()

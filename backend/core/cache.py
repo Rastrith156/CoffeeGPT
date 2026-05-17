@@ -116,3 +116,34 @@ class IntelligenceCache:
         except Exception as exc:
             logger.debug("Data cache store failed for {}: {}", key, exc)
             return False
+
+def cached(prefix: str, ttl: int = 300):
+    """Decorator to cache async function results in Redis."""
+    import functools
+    from inspect import iscoroutinefunction
+
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Try to get the cache instance from the first argument (usually self or request)
+            # For simplicity, we just instantiate a new one here.
+            cache_inst = IntelligenceCache()
+            
+            # Generate a key based on arguments
+            key_parts = [str(a) for a in args[1:]] + [f"{k}={v}" for k, v in kwargs.items()]
+            key_suffix = f"{func.__name__}:" + hashlib.md5(str(key_parts).encode()).hexdigest()
+            
+            cached_val = await cache_inst.get_data(prefix, key_suffix)
+            if cached_val is not None:
+                return cached_val
+            
+            result = await func(*args, **kwargs)
+            
+            # We assume the result is Pydantic model or dict. If Pydantic, convert to dict.
+            if hasattr(result, "model_dump"):
+                await cache_inst.set_data(prefix, key_suffix, result.model_dump(mode="json"), ttl)
+            else:
+                await cache_inst.set_data(prefix, key_suffix, result, ttl)
+            return result
+        return wrapper
+    return decorator

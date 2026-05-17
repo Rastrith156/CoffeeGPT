@@ -18,7 +18,7 @@ from __future__ import annotations
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.config import settings
 from core.logger import logger
@@ -42,7 +42,11 @@ _REFRESH_KEY_PREFIX = "coffee:auth:refresh:"
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 class TokenRequest(BaseModel):
-    api_key: str
+    api_key: str = Field(
+        ..., 
+        examples=["coffee-dev-key"],
+        description="Your developer API key"
+    )
 
 
 class TokenResponse(BaseModel):
@@ -111,7 +115,7 @@ async def _revoke_refresh_token(subject: str, token: str) -> None:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@router.post("/token", response_model=TokenResponse)
+@router.post("/token", response_model=TokenResponse, summary="Exchange API key for JWT token")
 async def issue_token(
     body: TokenRequest,
     request: Request,

@@ -1,0 +1,61 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        bg0: "#080a0d",
+        bg1: "#0d1117",
+        bg2: "#111820",
+        bg3: "#162030",
+        bgGlass: "rgba(13,17,23,0.82)",
+        espresso: "#2c1810",
+        bronze: "#c8923a",
+        bronzeGlow: "rgba(200,146,58,0.18)",
+        amber: "#e8a84a",
+        amberDim: "rgba(232,168,74,0.12)",
+        gold: "#f5c842",
+        cyan: "#00d4ff",
+        cyanDim: "rgba(0,212,255,0.10)",
+        cyanGlow: "rgba(0,212,255,0.20)",
+        green: "#22c55e",
+        greenDim: "rgba(34,197,94,0.12)",
+        red: "#ef4444",
+        redDim: "rgba(239,68,68,0.12)",
+        orange: "#f97316",
+        text0: "#f8fafc",
+        text1: "#cbd5e1",
+        text2: "#64748b",
+        text3: "#334155",
+        border: "rgba(255,255,255,0.06)",
+        borderHover: "rgba(255,255,255,0.12)",
+      },
+      fontFamily: {
+        sans: ['Inter', 'sans-serif'],
+        mono: ['DM Mono', 'monospace'],
+        syne: ['Syne', 'sans-serif'],
+      },
+      animation: {
+        pulse: "pulse 2s ease-in-out infinite",
+        blink: "blink 1s step-end infinite",
+        slideIn: "slideIn 0.3s ease forwards",
+        shimmer: "shimmer 2s infinite linear",
+        spin: "spin 1s linear infinite",
+        glow: "glow 3s ease-in-out infinite",
+        priceFlash: "priceFlash 0.6s ease",
+      },
+      keyframes: {
+        pulse: { "0%, 100%": { opacity: "1" }, "50%": { opacity: "0.4" } },
+        blink: { "0%, 100%": { opacity: "1" }, "50%": { opacity: "0" } },
+        slideIn: { from: { opacity: "0", transform: "translateY(8px)" }, to: { opacity: "1", transform: "translateY(0)" } },
+        shimmer: { "0%": { backgroundPosition: "-400px 0" }, "100%": { backgroundPosition: "400px 0" } },
+        glow: { "0%, 100%": { boxShadow: "0 0 8px rgba(0,212,255,0.20)" }, "50%": { boxShadow: "0 0 20px rgba(0,212,255,0.20), 0 0 40px rgba(0,212,255,0.10)" } },
+        priceFlash: { "0%": { background: "rgba(34,197,94,0.12)" }, "100%": { background: "transparent" } },
+      }
+    },
+  },
+  plugins: [],
+}
