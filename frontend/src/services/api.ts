@@ -60,3 +60,5 @@ export const login = async (apiKey: string) => {
   localStorage.setItem('access_token', data.access_token);
   return data;
 };
+
+export { fetchWithAuth as fetchApi };

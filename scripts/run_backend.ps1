@@ -10,7 +10,7 @@ if (-not (Test-Path $venvPython)) {
 
 Push-Location $backendRoot
 try {
-    & $venvPython -m uvicorn main:app --reload
+    & $venvPython -m uvicorn main:app --host 0.0.0.0 --reload
 }
 finally {
     Pop-Location
