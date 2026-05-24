@@ -23,7 +23,7 @@ class TestTickNormalizer:
     def test_normalizes_arabica_raw(self):
         raw = RawTickData(
             market="arabica",
-            source="barchart_live",
+            source="barchart_scrape",
             raw={
                 "symbol":        "KC",
                 "lastPrice":     226.50,
@@ -40,12 +40,12 @@ class TestTickNormalizer:
         assert tick.change_percent  == pytest.approx(0.55)
         assert tick.volume          == 32000
         assert tick.currency        == "US cents/lb"
-        assert tick.source          == "barchart_live"
+        assert tick.source          == "barchart_scrape"
 
     def test_normalizes_robusta_raw(self):
         raw = RawTickData(
             market="robusta",
-            source="barchart_overview",
+            source="barchart_scrape",
             raw={
                 "symbol":        "RM",
                 "lastPrice":     2390.0,
@@ -63,7 +63,7 @@ class TestTickNormalizer:
     def test_returns_none_for_zero_price(self):
         raw = RawTickData(
             market="arabica",
-            source="barchart_live",
+            source="barchart_scrape",
             raw={"symbol": "KC", "lastPrice": 0.0, "netChange": 0.0, "percentChange": 0.0},
         )
         assert TickNormalizer().normalize(raw) is None
@@ -166,46 +166,96 @@ def provider_with_mock_http():
 
 
 @pytest.mark.asyncio
-async def test_fetch_arabica_falls_back_to_synthetic_on_empty_results(provider_with_mock_http):
+async def test_fetch_arabica_falls_back_to_synthetic_on_scrape_failure(provider_with_mock_http):
+    """When scraping fails (e.g. connection error), should fall back to synthetic."""
     provider, mock_client = provider_with_mock_http
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"results": []}
-    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.get = AsyncMock(side_effect=ConnectionError("timeout"))
 
     raw = await provider.fetch_arabica()
-    # Empty results → synthetic fallback (in dev mode, settings.is_production=False)
+    # Exception → synthetic fallback in dev mode
     assert raw is not None
     assert raw.source == "synthetic"
 
 
 @pytest.mark.asyncio
-async def test_fetch_arabica_parses_live_quote():
-    """Verify that a valid Barchart response is parsed into barchart_live source."""
+async def test_fetch_arabica_scrape_returns_contracts():
+    """Verify that a successful scrape returns barchart_scrape source with contracts."""
     provider = BarchartProvider()
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {
-        "results": [{
-            "symbol":               "KC*1",
-            "lastPrice":            228.75,
-            "netChange":            1.10,
-            "percentChange":        0.48,
-            "volume":               41000,
-            "previousOpenInterest": 85000,
-        }]
-    }
-    mock_client = AsyncMock()
-    mock_client.get = AsyncMock(return_value=mock_resp)
 
-    # Patch _get_client so we control the HTTP layer entirely
-    with patch.object(provider, "_get_client", return_value=mock_client):
+    # Mock _scrape_contracts to return synthetic contract data
+    mock_contracts = [
+        {
+            "symbol": "KCN26",
+            "lastPrice": 228.75,
+            "netChange": 1.10,
+            "percentChange": 0.48,
+            "open": 227.50,
+            "high": 229.00,
+            "low": 226.80,
+            "previousClose": 227.65,
+            "volume": 41000,
+            "openInterest": 85000,
+            "tradeTime": "2026-05-23T20:00:00",
+        },
+        {
+            "symbol": "KCU26",
+            "lastPrice": 230.50,
+            "netChange": 0.85,
+            "percentChange": 0.37,
+            "open": 229.50,
+            "high": 231.00,
+            "low": 229.20,
+            "previousClose": 229.65,
+            "volume": 12000,
+            "openInterest": 45000,
+            "tradeTime": "2026-05-23T20:00:00",
+        },
+    ]
+
+    with patch.object(provider, "_scrape_contracts", return_value=mock_contracts):
         raw = await provider.fetch_arabica()
 
     assert raw is not None
-    assert raw.source             == "barchart_live"
+    assert raw.source             == "barchart_scrape"
     assert raw.raw["lastPrice"]   == pytest.approx(228.75)
     assert raw.raw["percentChange"] == pytest.approx(0.48)
+    assert raw.raw["volume"]      == 41000
+    # Front-month (highest volume) should be KCN26
+    assert raw.raw["symbol"]      == "KCN26"
+    # All contracts should be in the raw dict
+    assert "contracts" in raw.raw
+    assert len(raw.raw["contracts"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_robusta_scrape_returns_contracts():
+    """Verify that a successful Robusta scrape returns correctly."""
+    provider = BarchartProvider()
+
+    mock_contracts = [
+        {
+            "symbol": "RMN26",
+            "lastPrice": 2390.0,
+            "netChange": -15.0,
+            "percentChange": -0.62,
+            "open": 2400.0,
+            "high": 2410.0,
+            "low": 2385.0,
+            "previousClose": 2405.0,
+            "volume": 8500,
+            "openInterest": 22000,
+            "tradeTime": "2026-05-23T18:00:00",
+        },
+    ]
+
+    with patch.object(provider, "_scrape_contracts", return_value=mock_contracts):
+        raw = await provider.fetch_robusta()
+
+    assert raw is not None
+    assert raw.source           == "barchart_scrape"
+    assert raw.raw["lastPrice"] == pytest.approx(2390.0)
+    assert raw.raw["symbol"]    == "RMN26"
+    assert "contracts" in raw.raw
 
 
 @pytest.mark.asyncio
